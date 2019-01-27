@@ -1,0 +1,21 @@
+[package]
+name = "qk-proxy-rs"
+version = "0.1.0"
+authors = ["skye347 <s347419313@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name="client"
+path="./src/client.rs"
+
+[[bin]]
+name="server"
+path="./src/server.rs"
+
+[dependencies]
+packet-toolbox-rs = {path="../packet-toolbox-rs"}
+actix = "0.7"
+tokio = "0.1.14"
+byteorder = "1.3.1"
+bytes = "0.4"
+uuid = "0.7"
