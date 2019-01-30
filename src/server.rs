@@ -10,7 +10,6 @@ use tokio::codec::FramedRead;
 use tokio::net::{TcpStream, TcpListener};
 use byteorder::ReadBytesExt;
 use std::io;
-use packet_toolbox_rs::socks5::{message as SocksMessage, codec};
 use crate::message as ActorMessage;
 use uuid;
 use std::collections::HashMap;
