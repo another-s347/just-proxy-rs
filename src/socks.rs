@@ -16,11 +16,16 @@ use uuid;
 use std::collections::HashMap;
 use crate::Server;
 
+#[derive(Message)]
+pub struct SocksConnectedMessage {
+    pub connector:TcpStream
+}
+
 pub struct SocksClient<W>
 where W:AsyncWrite+'static
 {
     pub uuid: uuid::Uuid,
-    pub writer: FramedWrite<WriteHalf<W>, codec::Socks5ResponseCodec>,
+    pub writer: FramedWrite<WriteHalf<TcpStream>, codec::Socks5ResponseCodec>,
     //peer_stream: Option<Writer<WriteHalf<TcpStream>, io::Error>>,
     pub server_addr: Addr<Server<W>>,
 }

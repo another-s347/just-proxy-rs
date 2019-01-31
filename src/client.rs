@@ -1,6 +1,10 @@
+#[macro_use]
+extern crate failure;
+
 pub mod message;
 pub mod socks;
 pub mod connector;
+pub mod ext;
 
 use std::net;
 use std::str::FromStr;
@@ -14,18 +18,20 @@ use tokio::codec::FramedRead;
 use tokio::net::{TcpStream, TcpListener};
 use byteorder::ReadBytesExt;
 use std::io;
+use quinn::BiStream;
 use packet_toolbox_rs::socks5::{message as SocksMessage, codec};
 use message as ActorMessage;
 use uuid;
 use std::collections::HashMap;
 use socks::SocksClient;
-use connector::ConnectorMessage;
+use socks::SocksConnectedMessage;
+use connector::ProxyConnector;
 
 pub struct Server<W>
     where W: AsyncWrite+'static
 {
     clients: HashMap<uuid::Uuid, Addr<SocksClient<W>>>,
-    writer: FramedWrite<WriteHalf<TcpStream>, ActorMessage::ProxyRequestCodec>,
+    writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyRequestCodec>,
     //chat: Addr<ChatServer>,
 }
 
@@ -35,9 +41,6 @@ impl<W> Actor for Server<W> where W: AsyncWrite+'static
     /// Every actor has to provide execution `Context` in which it can run.
     type Context = Context<Self>;
 }
-
-#[derive(Message)]
-struct TcpConnect(pub TcpStream, pub net::SocketAddr);
 
 impl<W> Handler<message::ProxyRequest> for Server<W> where W: AsyncWrite+'static
 {
@@ -82,13 +85,14 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
 impl<W> actix::io::WriteHandler<io::Error> for Server<W> where W:AsyncWrite+'static {}
 
 /// Handle stream of TcpStream's
-impl<W> Handler<ConnectorMessage<W>> for Server<W> where W: AsyncRead+AsyncWrite+'static
+impl<W> Handler<SocksConnectedMessage> for Server<W>
+    where W:AsyncWrite+'static
 {
     /// this is response for message, which is defined by `ResponseType` trait
     /// in this case we just return unit.
     type Result = ();
 
-    fn handle(&mut self, mut msg: ConnectorMessage<W>, ctx: &mut Context<Self>) {
+    fn handle(&mut self, mut msg: SocksConnectedMessage, ctx: &mut Context<Self>) {
         let (r, w) = msg.connector.split();
         //println!("add stream");
         let uuid = uuid::Uuid::new_v4();
@@ -110,27 +114,32 @@ fn main() {
         // Create server listener
         let addr = net::SocketAddr::from_str("127.0.0.1:12345").unwrap();
         let listener = TcpListener::bind(&addr).unwrap();
-        let server_addr = net::SocketAddr::from_str("127.0.0.1:12346").unwrap();
-        let server_connect = TcpStream::connect(&server_addr).map(|server_stream| {
+//        let connector = connector::quic::QuicClientConnector::new_dangerous();
+        let connector=connector::tcp::TcpConnector{};
+        let f=connector.connect("127.0.0.1:12346",move|stream|{
             println!("server connected");
             Server::create(move |ctx| {
                 ctx.add_message_stream(listener.incoming().map_err(|_| ()).map(|st| {
                     let addr = st.peer_addr().unwrap();
-                    ConnectorMessage {
+                    SocksConnectedMessage {
                         connector:st
                     }
                 }));
-                let (r, w) = server_stream.split();
+                let (r, w) = stream.split();
                 Server::add_stream(FramedRead::new(r, ActorMessage::ProxyResponseCodec), ctx);
+                let writer:FramedWrite<WriteHalf<_>, ActorMessage::ProxyRequestCodec>=FramedWrite::new(w, ActorMessage::ProxyRequestCodec, ctx);
                 Server {
                     clients: HashMap::new(),
-                    writer: FramedWrite::new(w, ActorMessage::ProxyRequestCodec, ctx),
+                    writer,
                 }
             });
-        }).map_err(|err| {
-            dbg!(err);
         });
-        actix::spawn(server_connect);
+        //let server_addr = net::SocketAddr::from_str().unwrap();
+//        let server_connect = TcpStream::connect(&server_addr).map(|server_stream| {
+//        }).map_err(|err| {
+//            dbg!(err);
+//        });
+        actix::spawn(f);
 
         println!("Running chat server on 127.0.0.1:12345");
     });

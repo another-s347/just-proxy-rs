@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate failure;
+
 use std::net;
 use std::str::FromStr;
 
@@ -13,49 +16,62 @@ use std::io;
 use crate::message as ActorMessage;
 use uuid;
 use std::collections::HashMap;
+use crate::connector::ProxyListener;
 
 mod message;
+mod connector;
+mod ext;
 
 #[derive(Message)]
-pub struct ConnectionEstablished {
+pub struct ConnectionEstablished<W> where W:AsyncWrite+'static {
     uuid:uuid::Uuid,
-    addr:Addr<ProxyEndpointConnection>
+    addr:Addr<ProxyEndpointConnection<W>>
 }
 
-pub struct ProxyEndpointConnection {
+pub struct ProxyEndpointConnection<W> where W:AsyncWrite+'static {
     uuid: uuid::Uuid,
-    client:Addr<ProxyClient>,
+    client:Addr<ProxyClient<W>>,
     writer:Writer<WriteHalf<TcpStream>,io::Error>
 }
 
 #[derive(Message)]
 pub struct ProxyConnectionSend(Vec<u8>);
 
-pub struct ProxyServer {
-    clients: Vec<Addr<ProxyClient>>
+pub struct ProxyServer<W> where W:AsyncWrite+'static {
+    clients: Vec<Addr<ProxyClient<W>>>
 }
 
-pub struct ProxyClient {
-    writer: FramedWrite<WriteHalf<TcpStream>, ActorMessage::ProxyResponseCodec>,
-    connections: HashMap<uuid::Uuid, Addr<ProxyEndpointConnection>>,
+pub struct ProxyClient<W>
+    where W:AsyncWrite+'static
+{
+    writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>,
+    connections: HashMap<uuid::Uuid, Addr<ProxyEndpointConnection<W>>>,
 }
 
-#[derive(Message)]
-struct TcpConnect(pub TcpStream, pub net::SocketAddr);
+//#[derive(Message)]
+//struct TcpConnect(pub TcpStream, pub net::SocketAddr);
 
-impl Actor for ProxyClient {
+impl<W> Actor for ProxyClient<W>
+    where W:AsyncWrite+'static
+{
     type Context = Context<Self>;
 }
 
-impl Actor for ProxyServer {
+impl<W> Actor for ProxyServer<W>
+    where W:AsyncWrite+'static
+{
     type Context = Context<Self>;
 }
 
-impl Actor for ProxyEndpointConnection {
+impl<W> Actor for ProxyEndpointConnection<W>
+    where W:AsyncWrite+'static
+{
     type Context = Context<Self>;
 }
 
-impl StreamHandler<Vec<u8>,io::Error> for ProxyEndpointConnection {
+impl<W> StreamHandler<Vec<u8>,io::Error> for ProxyEndpointConnection<W>
+    where W:AsyncWrite+'static
+{
     fn handle(&mut self, item: Vec<u8>, ctx: &mut Self::Context) {
         //println!("send to client,len {}",item.len());
         self.client.do_send(ActorMessage::ProxyResponse::new(
@@ -65,7 +81,9 @@ impl StreamHandler<Vec<u8>,io::Error> for ProxyEndpointConnection {
     }
 }
 
-impl Handler<ProxyConnectionSend> for ProxyEndpointConnection {
+impl<W> Handler<ProxyConnectionSend> for ProxyEndpointConnection<W>
+    where W:AsyncWrite+'static
+{
     type Result = ();
 
     fn handle(&mut self, msg: ProxyConnectionSend, ctx: &mut Self::Context) -> Self::Result {
@@ -74,9 +92,11 @@ impl Handler<ProxyConnectionSend> for ProxyEndpointConnection {
     }
 }
 
-impl actix::io::WriteHandler<io::Error> for ProxyEndpointConnection {}
+impl<W> actix::io::WriteHandler<io::Error> for ProxyEndpointConnection<W> where W:AsyncWrite+'static {}
 
-impl Handler<ActorMessage::ProxyResponse> for ProxyClient {
+impl<W> Handler<ActorMessage::ProxyResponse> for ProxyClient<W>
+where W:AsyncWrite+'static
+{
     type Result = ();
 
     fn handle(&mut self, msg: ActorMessage::ProxyResponse, ctx: &mut Self::Context) -> Self::Result {
@@ -84,10 +104,12 @@ impl Handler<ActorMessage::ProxyResponse> for ProxyClient {
     }
 }
 
-impl Handler<ConnectionEstablished> for ProxyClient{
+impl<W> Handler<ConnectionEstablished<W>> for ProxyClient<W>
+    where W:AsyncWrite+'static
+{
     type Result = ();
 
-    fn handle(&mut self, msg: ConnectionEstablished, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ConnectionEstablished<W>, ctx: &mut Self::Context) -> Self::Result {
         self.connections.insert(msg.uuid.clone(),msg.addr);
         //dbg!(msg.uuid.as_bytes());
         self.writer.write(ActorMessage::ProxyResponse::new(
@@ -97,7 +119,9 @@ impl Handler<ConnectionEstablished> for ProxyClient{
     }
 }
 
-impl StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient {
+impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
+where W:AsyncWrite+'static
+{
     fn handle(&mut self, item: ActorMessage::ProxyRequest, ctx: &mut Self::Context) {
         let uuid=item.uuid;
         let request=item.request;
@@ -105,7 +129,6 @@ impl StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient {
             ActorMessage::ProxyTransfer::RequestAddr(addr)=>{
                 let client_addr=ctx.address();
                 let client_addr_cloned=client_addr.clone();
-                //dbg!(&addr);
                 Connector::from_registry()
                     .send(Connect::host(addr))
                     .into_actor(self)
@@ -163,13 +186,15 @@ impl StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient {
     }
 }
 
-impl actix::io::WriteHandler<io::Error> for ProxyClient {}
+impl<W> actix::io::WriteHandler<io::Error> for ProxyClient<W> where W:AsyncWrite+'static {}
 
-impl Handler<TcpConnect> for ProxyServer {
+impl<W> Handler<connector::ConnectorMessage<W>> for ProxyServer<W>
+where W:AsyncRead+AsyncWrite+'static
+{
     type Result = ();
 
-    fn handle(&mut self, mut msg: TcpConnect, ctx: &mut Context<Self>) {
-        let (r, w) = msg.0.split();
+    fn handle(&mut self, mut msg: connector::ConnectorMessage<W>, ctx: &mut Context<Self>) {
+        let (r, w) = msg.connector.split();
         let addr = ProxyClient::create(move |ctx| {
             ProxyClient::add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec), ctx);
             let writer = actix::io::FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
@@ -186,19 +211,19 @@ fn main() {
     actix::System::run(|| {
 
         // Create server listener
-        let addr = net::SocketAddr::from_str("127.0.0.1:12346").unwrap();
-        let listener = TcpListener::bind(&addr).unwrap();
-
-        ProxyServer::create(|ctx| {
-            ctx.add_message_stream(listener.incoming().map_err(|_| ()).map(|st| {
-                let addr = st.peer_addr().unwrap();
-                TcpConnect(st, addr)
-            }));
-            ProxyServer {
-                clients: Vec::new()
-            }
-        });
-
-        println!("Running chat server on 127.0.0.1:12346");
+        //let connector=connector::quic::QuicServerConnector::new_dangerous();
+        let connector=connector::tcp::TcpConnector{};
+        connector.listen("127.0.0.1:12346",move|s|{
+            ProxyServer::create(|ctx| {
+                ctx.add_message_stream(s.map(|st| {
+                    connector::ConnectorMessage{
+                        connector:st
+                    }
+                }));
+                ProxyServer {
+                    clients: Vec::new()
+                }
+            });
+        })
     });
 }
