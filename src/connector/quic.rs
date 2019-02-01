@@ -109,7 +109,9 @@ impl QuicServerConnector {
 
 impl ProxyListener<BiStream> for QuicServerConnector {
     fn listen<F>(self, addr: &str, f: F) where F: FnOnce(Box<dyn Stream<Item=BiStream, Error=()>>) + 'static {
-        let mut endpoint = quinn::Endpoint::new();
+        let mut quic_config = quinn::Config::default();
+        quic_config.idle_timeout=100;
+        let mut endpoint = quinn::EndpointBuilder::new(quic_config);
         //endpoint.logger(log.clone());
         endpoint.listen(self.server_config);
         let (_, driver, incoming) = endpoint.bind(addr).unwrap();

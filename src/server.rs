@@ -55,6 +55,10 @@ impl<W> Actor for ProxyClient<W>
     where W:AsyncWrite+'static
 {
     type Context = Context<Self>;
+
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        println!("proxy client actor stopped");
+    }
 }
 
 impl<W> Actor for ProxyServer<W>
@@ -157,7 +161,7 @@ where W:AsyncWrite+'static
                                 uuid,
                                 ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::Timeout)
                             ));
-                            ctx.stop();
+                            //ctx.stop();
                         }
                     })
                     .map_err(move |err, _act, ctx| {
@@ -182,7 +186,18 @@ where W:AsyncWrite+'static
             ActorMessage::ProxyTransfer::Response(_)=>{
                 panic!()
             }
+            ActorMessage::ProxyTransfer::Heartbeat=>{
+                self.writer.write(ActorMessage::ProxyResponse::new(
+                    uuid,
+                    ActorMessage::ProxyTransfer::Heartbeat
+                ));
+            }
         }
+    }
+
+    fn finished(&mut self, ctx: &mut Self::Context) {
+        println!("proxy client stream finished");
+        ctx.stop()
     }
 }
 
@@ -211,8 +226,8 @@ fn main() {
     actix::System::run(|| {
 
         // Create server listener
-        //let connector=connector::quic::QuicServerConnector::new_dangerous();
-        let connector=connector::tcp::TcpConnector{};
+        let connector=connector::quic::QuicServerConnector::new_dangerous();
+//        let connector=connector::tcp::TcpConnector{};
         connector.listen("127.0.0.1:12346",move|s|{
             ProxyServer::create(|ctx| {
                 ctx.add_message_stream(s.map(|st| {

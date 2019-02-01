@@ -51,7 +51,8 @@ impl ProxyRequest {
         let (len, t_type) = match &request {
             ProxyTransfer::Response(_) => (1usize, ProxyTransferType::Response),
             ProxyTransfer::RequestAddr(ref a) => (a.as_bytes().len(), ProxyTransferType::RequestAddr),
-            ProxyTransfer::Data(ref a) => (a.len(), ProxyTransferType::Data)
+            ProxyTransfer::Data(ref a) => (a.len(), ProxyTransferType::Data),
+            ProxyTransfer::Heartbeat => (0, ProxyTransferType::Heartbeat)
         };
         ProxyRequest {
             uuid,
@@ -67,7 +68,8 @@ impl ProxyResponse {
         let (len, t_type) = match &response {
             ProxyTransfer::Response(_) => (1usize, ProxyTransferType::Response),
             ProxyTransfer::RequestAddr(ref a) => (a.as_bytes().len(), ProxyTransferType::RequestAddr),
-            ProxyTransfer::Data(ref a) => (a.len(), ProxyTransferType::Data)
+            ProxyTransfer::Data(ref a) => (a.len(), ProxyTransferType::Data),
+            ProxyTransfer::Heartbeat => (0, ProxyTransferType::Heartbeat)
         };
         ProxyResponse {
             uuid,
@@ -82,12 +84,14 @@ pub enum ProxyTransferType {
     Data = 0x0,
     RequestAddr = 0x1,
     Response = 0x2,
+    Heartbeat = 0x3
 }
 
 pub enum ProxyTransfer {
     Data(Vec<u8>),
     RequestAddr(String),
     Response(ProxyResponseType),
+    Heartbeat
 }
 
 pub enum ProxyResponseType {
@@ -150,6 +154,9 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
                 };
                 (ProxyTransferType::Response,r)
             },
+            0x3=>{
+                (ProxyTransferType::Heartbeat,ProxyTransfer::Heartbeat)
+            }
             _=>panic!()
         };
         Ok(Some(ProxyResponse{
@@ -206,6 +213,9 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
                 };
                 (ProxyTransferType::Response,r)
             },
+            0x3=>{
+                (ProxyTransferType::Heartbeat,ProxyTransfer::Heartbeat)
+            }
             _=>panic!()
         };
         Ok(Some(ProxyRequest{
@@ -254,7 +264,8 @@ impl tokio::codec::Encoder for ProxyRequestCodec {
             }
             ProxyTransfer::Response(response) => {
                 dst.put_u8(response as u8);
-            }
+            },
+            ProxyTransfer::Heartbeat=> {}
         }
         Ok(())
     }
@@ -285,7 +296,8 @@ impl tokio::codec::Encoder for ProxyResponseCodec {
             }
             ProxyTransfer::Response(response) => {
                 dst.put_u8(response as u8);
-            }
+            },
+            ProxyTransfer::Heartbeat => {}
         }
         Ok(())
     }

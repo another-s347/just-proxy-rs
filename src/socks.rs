@@ -32,6 +32,10 @@ where W:AsyncWrite+'static
 
 impl<W> Actor for SocksClient<W> where W:AsyncWrite+'static {
     type Context = Context<Self>;
+
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        println!("socks client actor stopped");
+    }
 }
 
 impl<W> Handler<ActorMessage::ConnectorResponse> for SocksClient<W> where W:AsyncWrite+'static {

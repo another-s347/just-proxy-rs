@@ -11,7 +11,7 @@ impl ProxyConnector<TcpStream> for TcpConnector {
     fn connect<F>(self,addr:&str,f:F) -> Box<Future<Item=(), Error=()>>
     where F:FnOnce(TcpStream)+'static
     {
-        let server_addr = net::SocketAddr::from_str("127.0.0.1:12346").unwrap();
+        let server_addr = net::SocketAddr::from_str(addr).unwrap();
         Box::new(
         TcpStream::connect(&server_addr).map(|server_stream| {
             f(server_stream);
