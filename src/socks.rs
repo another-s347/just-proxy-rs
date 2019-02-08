@@ -58,7 +58,12 @@ impl<W> Actor for SocksClient<W> where W:AsyncWrite+'static {
     type Context = Context<Self>;
 
     fn stopped(&mut self, ctx: &mut Self::Context) {
-        let cc=format!("{} millis",self.connect_rtt.unwrap().as_millis());
+        let cc=if let Some(rtt)=self.connect_rtt {
+            format!("{} millis",rtt.as_millis())
+        }
+        else{
+            "unavailable".to_owned()
+        };
         let send = self.send_bytes.clone();
         let recv=self.recv_bytes.clone();
         info!(self.logger,"socks client actor stopped";"address"=>self.target_address.clone().unwrap());

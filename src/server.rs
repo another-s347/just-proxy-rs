@@ -141,15 +141,16 @@ where W:AsyncWrite+'static
                 let client_addr_cloned=client_addr.clone();
                 let start=Instant::now();
                 Connector::from_registry()
-                    .send(Connect::host(addr))
+                    .send(Connect::host(addr.clone()))
                     .into_actor(self)
                     .map(move |res, _act, ctx| match res {
                         Ok(stream) => {
                             let cost = Instant::now().duration_since(start);
+                            println!("connected addr:{}, cost:{} millis",addr,cost.as_millis());
                             //println!("connected in proxy server");
                             let (r,w)=stream.split();
                             let client_addr_c=client_addr.clone();
-                            let conn_addr=ProxyEndpointConnection::create(move|ctx|{
+                            let conn_addr=actix::Arbiter::start(move|ctx|{
                                 ProxyEndpointConnection::add_stream(FramedRead::new(r, ActorMessage::BytesCodec),ctx);
                                 let writer=Writer::new(w,ctx);
                                 ProxyEndpointConnection {
@@ -214,13 +215,13 @@ where W:AsyncWrite+'static
 impl<W> actix::io::WriteHandler<io::Error> for ProxyClient<W> where W:AsyncWrite+'static {}
 
 impl<W> Handler<connector::ConnectorMessage<W>> for ProxyServer<W>
-where W:AsyncRead+AsyncWrite+'static
+where W:AsyncRead+AsyncWrite+'static+Send
 {
     type Result = ();
 
     fn handle(&mut self, mut msg: connector::ConnectorMessage<W>, ctx: &mut Context<Self>) {
         let (r, w) = msg.connector.split();
-        let addr = ProxyClient::create(move |ctx| {
+        let addr=actix::Arbiter::start(move|ctx|{
             ProxyClient::add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec), ctx);
             let writer = actix::io::FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
             ProxyClient {

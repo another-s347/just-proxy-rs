@@ -39,7 +39,7 @@ use structopt::StructOpt;
 use slog::Drain;
 use slog::*;
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 
 pub struct Server<W>
     where W: AsyncWrite + 'static
@@ -64,7 +64,7 @@ impl<W> Server<W> where W: AsyncWrite + 'static {
         let hb_logger=self.logger.clone();
         ctx.run_interval(HEARTBEAT_INTERVAL, move |act, ctx| {
             // check client heartbeats
-            if Instant::now().duration_since(act.hb) > Duration::from_secs(20) {
+            if Instant::now().duration_since(act.hb) > Duration::from_secs(10) {
                 // heartbeat timed out
                 info!(hb_logger,"heartbeat failed, disconnecting!");
 
@@ -178,13 +178,19 @@ impl<W> Handler<SocksConnectedMessage> for Server<W>
         let uuid_key = uuid.clone();
         let server_addr = ctx.address();
         let logger=self.logger.clone();
-        let addr = SocksClient::create(move |ctx| {
+        let addr=actix::Arbiter::start(move|ctx|{
             let uuid_str=uuid.to_string();
             SocksClient::add_stream(FramedRead::new(r, codec::Socks5RequestCodec::new()), ctx);
             let writer = actix::io::FramedWrite::new(w, codec::Socks5ResponseCodec, ctx);
             SocksClient::new(uuid,writer,server_addr,logger.new(o!("uuid"=>uuid_str)))
-            //SocksClient { uuid, writer, server_addr , logger:logger.new(o!("uuid"=>uuid_str)), connect_request_record: (), connect_cost: (), send_bytes: 0, recv_bytes: 0 }
         });
+//        let addr = SocksClient::create(move |ctx| {
+//            let uuid_str=uuid.to_string();
+//            SocksClient::add_stream(FramedRead::new(r, codec::Socks5RequestCodec::new()), ctx);
+//            let writer = actix::io::FramedWrite::new(w, codec::Socks5ResponseCodec, ctx);
+//            SocksClient::new(uuid,writer,server_addr,logger.new(o!("uuid"=>uuid_str)))
+//            //SocksClient { uuid, writer, server_addr , logger:logger.new(o!("uuid"=>uuid_str)), connect_request_record: (), connect_cost: (), send_bytes: 0, recv_bytes: 0 }
+//        });
         self.clients.insert(uuid_key, addr);
     }
 }
