@@ -1,10 +1,17 @@
 #[macro_use]
 extern crate failure;
+#[macro_use]
+extern crate structopt;
+#[macro_use]
+extern crate slog;
+extern crate slog_async;
+extern crate slog_term;
 
 pub mod message;
 pub mod socks;
 pub mod connector;
 pub mod ext;
+pub mod opt;
 
 use std::net;
 use std::str::FromStr;
@@ -28,6 +35,9 @@ use socks::SocksConnectedMessage;
 use connector::ProxyConnector;
 use std::time::{Duration, Instant};
 use uuid::prelude::*;
+use structopt::StructOpt;
+use slog::Drain;
+use slog::*;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -37,7 +47,9 @@ pub struct Server<W>
     clients: HashMap<uuid::Uuid, Addr<SocksClient<W>>>,
     writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyRequestCodec>,
     //chat: Addr<ChatServer>,
-    hb:Instant
+    hb:Instant,
+    logger: Logger,
+    last_hb_instant:Instant
 }
 
 /// Make actor from `Server`
@@ -49,11 +61,12 @@ impl<W> Actor for Server<W> where W: AsyncWrite + 'static
 
 impl<W> Server<W> where W: AsyncWrite + 'static {
     fn hb(&self, ctx: &mut Context<Self>) {
-        ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
+        let hb_logger=self.logger.clone();
+        ctx.run_interval(HEARTBEAT_INTERVAL, move |act, ctx| {
             // check client heartbeats
             if Instant::now().duration_since(act.hb) > Duration::from_secs(20) {
                 // heartbeat timed out
-                println!("heartbeat failed, disconnecting!");
+                info!(hb_logger,"heartbeat failed, disconnecting!");
 
                 // notify chat server
 //                ctx.state()
@@ -61,13 +74,14 @@ impl<W> Server<W> where W: AsyncWrite + 'static {
 //                    .do_send(server::Disconnect { id: act.id });
 //
 //                // stop actor
-//                ctx.stop();
+                ctx.stop();
 //
 //                // don't try to send a ping
 //                return;
             }
-
-            ctx.address().do_send(Heartbeat);
+            else {
+                ctx.address().do_send(Heartbeat);
+            }
         });
     }
 }
@@ -92,8 +106,9 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
         if uuid.is_nil() {
             match response {
                 ActorMessage::ProxyTransfer::Heartbeat => {
+                    let hb_rtt=Instant::now().duration_since(self.last_hb_instant).as_millis();
                     self.hb=Instant::now();
-                    println!("recv heartbeat");
+                    debug!(self.logger,"recv heartbeat rtt:{} millis",hb_rtt);
                 }
                 _=>{
                     panic!()
@@ -112,7 +127,6 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
                 ActorMessage::ProxyTransfer::Response(r) => {
                     match r {
                         ActorMessage::ProxyResponseType::Succeeded => {
-                            //println!("connected in proxy server");
                             socks_client.do_send(ActorMessage::ConnectorResponse::Succeeded)
                         }
                         ActorMessage::ProxyResponseType::ConnectionRefused => {
@@ -131,7 +145,7 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
     }
 
     fn finished(&mut self, ctx: &mut Self::Context) {
-        println!("server disconnected");
+        info!(self.logger,"server disconnected");
         ctx.stop()
     }
 }
@@ -140,6 +154,7 @@ impl<W> Handler<Heartbeat> for Server<W> where W:AsyncWrite+'static {
     type Result = ();
 
     fn handle(&mut self, msg: Heartbeat, ctx: &mut Self::Context) -> Self::Result {
+        self.last_hb_instant=Instant::now();
         self.writer.write(ActorMessage::ProxyRequest::new(
             uuid::Uuid::nil(),
             ActorMessage::ProxyTransfer::Heartbeat
@@ -159,14 +174,16 @@ impl<W> Handler<SocksConnectedMessage> for Server<W>
 
     fn handle(&mut self, mut msg: SocksConnectedMessage, ctx: &mut Context<Self>) {
         let (r, w) = msg.connector.split();
-        //println!("add stream");
         let uuid = uuid::Uuid::new_v4();
         let uuid_key = uuid.clone();
         let server_addr = ctx.address();
+        let logger=self.logger.clone();
         let addr = SocksClient::create(move |ctx| {
+            let uuid_str=uuid.to_string();
             SocksClient::add_stream(FramedRead::new(r, codec::Socks5RequestCodec::new()), ctx);
             let writer = actix::io::FramedWrite::new(w, codec::Socks5ResponseCodec, ctx);
-            SocksClient { uuid, writer, server_addr }
+            SocksClient::new(uuid,writer,server_addr,logger.new(o!("uuid"=>uuid_str)))
+            //SocksClient { uuid, writer, server_addr , logger:logger.new(o!("uuid"=>uuid_str)), connect_request_record: (), connect_cost: (), send_bytes: 0, recv_bytes: 0 }
         });
         self.clients.insert(uuid_key, addr);
     }
@@ -174,15 +191,24 @@ impl<W> Handler<SocksConnectedMessage> for Server<W>
 
 
 fn main() {
-    actix::System::run(|| {
+    let opt:opt::ClientOpt = dbg!(opt::ClientOpt::from_args());
 
+    let decorator = slog_term::PlainDecorator::new(std::io::stdout());
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    let log = slog::Logger::root(drain, o!("version" => "0.5"));
+
+    actix::System::run(move || {
         // Create server listener
-        let addr = net::SocketAddr::from_str("127.0.0.1:12345").unwrap();
+        let addr = net::SocketAddr::from_str(&format!("{}:{}",opt.socks_host,opt.socks_port)).unwrap();
+        //let addr = net::SocketAddr::from_str("127.0.0.1:12345").unwrap();
         let listener = TcpListener::bind(&addr).unwrap();
-        let connector = connector::quic::QuicClientConnector::new_dangerous();
-//        let connector=connector::tcp::TcpConnector{};
-        let f = connector.connect("127.0.0.1:12346", move |stream| {
-            println!("server connected");
+        //let connector = connector::quic::QuicClientConnector::new_dangerous();
+        let connector=connector::tcp::TcpConnector{};
+        let proxy_address_str=format!("{}:{}",opt.proxy_host,opt.proxy_port);
+        let f = connector.connect(&proxy_address_str.clone(), move |stream| {
+            info!(log,"Connected to proxy server";"address"=>proxy_address_str.clone());
             Server::create(move |ctx| {
                 ctx.add_message_stream(listener.incoming().map_err(|_| ()).map(|st| {
                     let addr = st.peer_addr().unwrap();
@@ -196,19 +222,14 @@ fn main() {
                 let s=Server {
                     clients: HashMap::new(),
                     writer,
-                    hb:Instant::now()
+                    hb:Instant::now(),
+                    logger: log.new(o!("address"=>proxy_address_str)),
+                    last_hb_instant:Instant::now()
                 };
                 s.hb(ctx);
                 s
             });
         });
-        //let server_addr = net::SocketAddr::from_str().unwrap();
-//        let server_connect = TcpStream::connect(&server_addr).map(|server_stream| {
-//        }).map_err(|err| {
-//            dbg!(err);
-//        });
         actix::spawn(f);
-
-        println!("Running chat server on 127.0.0.1:12345");
     });
 }

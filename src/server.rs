@@ -1,5 +1,7 @@
 #[macro_use]
 extern crate failure;
+#[macro_use]
+extern crate structopt;
 
 use std::net;
 use std::str::FromStr;
@@ -17,15 +19,18 @@ use crate::message as ActorMessage;
 use uuid;
 use std::collections::HashMap;
 use crate::connector::ProxyListener;
+use std::time::{Instant,Duration};
 
 mod message;
 mod connector;
 mod ext;
+mod opt;
 
 #[derive(Message)]
 pub struct ConnectionEstablished<W> where W:AsyncWrite+'static {
     uuid:uuid::Uuid,
-    addr:Addr<ProxyEndpointConnection<W>>
+    addr:Addr<ProxyEndpointConnection<W>>,
+    cost:Duration
 }
 
 pub struct ProxyEndpointConnection<W> where W:AsyncWrite+'static {
@@ -77,7 +82,7 @@ impl<W> StreamHandler<Vec<u8>,io::Error> for ProxyEndpointConnection<W>
     where W:AsyncWrite+'static
 {
     fn handle(&mut self, item: Vec<u8>, ctx: &mut Self::Context) {
-        //println!("send to client,len {}",item.len());
+        println!("send to client,len {}",item.len());
         self.client.do_send(ActorMessage::ProxyResponse::new(
             self.uuid.clone(),
             ActorMessage::ProxyTransfer::Data(item)
@@ -133,11 +138,13 @@ where W:AsyncWrite+'static
             ActorMessage::ProxyTransfer::RequestAddr(addr)=>{
                 let client_addr=ctx.address();
                 let client_addr_cloned=client_addr.clone();
+                let start=Instant::now();
                 Connector::from_registry()
                     .send(Connect::host(addr))
                     .into_actor(self)
                     .map(move |res, _act, ctx| match res {
                         Ok(stream) => {
+                            let cost = Instant::now().duration_since(start);
                             //println!("connected in proxy server");
                             let (r,w)=stream.split();
                             let client_addr_c=client_addr.clone();
@@ -152,11 +159,13 @@ where W:AsyncWrite+'static
                             });
                             client_addr_c.do_send(ConnectionEstablished{
                                 uuid,
-                                addr: conn_addr
+                                addr: conn_addr,
+                                cost
                             })
                         }
                         Err(err) => {
                             dbg!(err);
+                            let cost = Instant::now().duration_since(start);
                             client_addr.do_send(ActorMessage::ProxyResponse::new(
                                 uuid,
                                 ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::Timeout)
@@ -226,8 +235,8 @@ fn main() {
     actix::System::run(|| {
 
         // Create server listener
-        let connector=connector::quic::QuicServerConnector::new_dangerous();
-//        let connector=connector::tcp::TcpConnector{};
+//        let connector=connector::quic::QuicServerConnector::new_dangerous();
+        let connector=connector::tcp::TcpConnector{};
         connector.listen("127.0.0.1:12346",move|s|{
             ProxyServer::create(|ctx| {
                 ctx.add_message_stream(s.map(|st| {

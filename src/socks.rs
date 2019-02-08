@@ -15,6 +15,8 @@ use super::message as ActorMessage;
 use uuid;
 use std::collections::HashMap;
 use crate::Server;
+use slog::*;
+use std::time::{Instant,Duration};
 
 #[derive(Message)]
 pub struct SocksConnectedMessage {
@@ -28,13 +30,40 @@ where W:AsyncWrite+'static
     pub writer: FramedWrite<WriteHalf<TcpStream>, codec::Socks5ResponseCodec>,
     //peer_stream: Option<Writer<WriteHalf<TcpStream>, io::Error>>,
     pub server_addr: Addr<Server<W>>,
+    pub logger: Logger,
+    pub connect_request_record:Option<Instant>,
+    pub connect_rtt:Option<Duration>,
+    pub send_bytes:u64,
+    pub recv_bytes:u64,
+    pub target_address:Option<String>
+}
+
+impl<W> SocksClient<W> where W:AsyncWrite+'static {
+    pub fn new(uuid:uuid::Uuid,writer:FramedWrite<WriteHalf<TcpStream>, codec::Socks5ResponseCodec>,server_addr:Addr<Server<W>>,logger:Logger)->SocksClient<W> {
+        SocksClient {
+            uuid,
+            writer,
+            server_addr,
+            logger,
+            connect_request_record:None,
+            connect_rtt:None,
+            send_bytes:0,
+            recv_bytes:0,
+            target_address:None
+        }
+    }
 }
 
 impl<W> Actor for SocksClient<W> where W:AsyncWrite+'static {
     type Context = Context<Self>;
 
     fn stopped(&mut self, ctx: &mut Self::Context) {
-        println!("socks client actor stopped");
+        let cc=format!("{} millis",self.connect_rtt.unwrap().as_millis());
+        let send = self.send_bytes.clone();
+        let recv=self.recv_bytes.clone();
+        info!(self.logger,"socks client actor stopped";"address"=>self.target_address.clone().unwrap());
+        info!(self.logger,"traffic send:{} bytes, recv:{} bytes",send,recv);
+        info!(self.logger,"network";"connect rtt"=>cc);
     }
 }
 
@@ -44,6 +73,7 @@ impl<W> Handler<ActorMessage::ConnectorResponse> for SocksClient<W> where W:Asyn
     fn handle(&mut self, msg: ActorMessage::ConnectorResponse, ctx: &mut Self::Context) -> Self::Result {
         match msg {
             ActorMessage::ConnectorResponse::Succeeded => {
+                self.connect_rtt =Some(Instant::now().duration_since(self.connect_request_record.unwrap()));
                 self.writer.write(SocksMessage::SocksResponse::TargetResponse(SocksMessage::TargetResponse {
                     version: 5,
                     response: SocksMessage::TargetResponseType::Succeeded,
@@ -54,6 +84,8 @@ impl<W> Handler<ActorMessage::ConnectorResponse> for SocksClient<W> where W:Asyn
                 }));
             }
             ActorMessage::ConnectorResponse::Failed => {
+                self.connect_rtt =Some(Instant::now().duration_since(self.connect_request_record.unwrap()));
+                info!(self.logger,"Connect fail";"address"=>self.target_address.clone().unwrap());
                 self.writer.write(SocksMessage::SocksResponse::TargetResponse(SocksMessage::TargetResponse {
                     version: 5,
                     response: SocksMessage::TargetResponseType::ConnectionRefused,
@@ -64,6 +96,7 @@ impl<W> Handler<ActorMessage::ConnectorResponse> for SocksClient<W> where W:Asyn
                 }));
             }
             ActorMessage::ConnectorResponse::Data(data)=> {
+                self.recv_bytes+=(data.len() as u64);
                 self.writer.write(SocksMessage::SocksResponse::Data(data))
             }
         }
@@ -72,13 +105,13 @@ impl<W> Handler<ActorMessage::ConnectorResponse> for SocksClient<W> where W:Asyn
 
 impl<W> StreamHandler<Vec<u8>, io::Error> for SocksClient<W> where W:AsyncWrite+'static {
     fn handle(&mut self, item: Vec<u8>, ctx: &mut Self::Context) {
+        print!("???");
         self.writer.write(SocksMessage::SocksResponse::Data(item));
     }
 }
 
 impl<W> StreamHandler<SocksMessage::SocksRequest, io::Error> for SocksClient<W> where W:AsyncWrite+'static {
     fn handle(&mut self, item: SocksMessage::SocksRequest, ctx: &mut Self::Context) {
-        //dbg!(&item);
         match item {
             SocksMessage::SocksRequest::Negotiation(nego) => {
                 self.writer.write(SocksMessage::SocksResponse::Negotiation(SocksMessage::MethodSelectionResponse {
@@ -92,6 +125,8 @@ impl<W> StreamHandler<SocksMessage::SocksRequest, io::Error> for SocksClient<W> 
                 let s = (t.to_addressstring());
                 let addr = ctx.address();
                 let addr2 = addr.clone();
+                self.connect_request_record=Some(Instant::now());
+                self.target_address=Some(s.clone());
                 self.server_addr.do_send(ActorMessage::ProxyRequest::new(
                     self.uuid.clone(),
                     ActorMessage::ProxyTransfer::RequestAddr(s)
@@ -99,6 +134,7 @@ impl<W> StreamHandler<SocksMessage::SocksRequest, io::Error> for SocksClient<W> 
             }
             SocksMessage::SocksRequest::Data(data) => {
                 //println!("send to server");
+                self.send_bytes+=(data.len() as u64);
                 self.server_addr.do_send(ActorMessage::ProxyRequest::new(
                     self.uuid.clone(),
                     ActorMessage::ProxyTransfer::Data(data)
