@@ -20,6 +20,7 @@ use uuid;
 use std::collections::HashMap;
 use crate::connector::ProxyListener;
 use std::time::{Instant,Duration};
+use structopt::StructOpt;
 
 mod message;
 mod connector;
@@ -232,12 +233,14 @@ where W:AsyncRead+AsyncWrite+'static
 }
 
 fn main() {
-    actix::System::run(|| {
+    let opt:opt::ServerOpt = dbg!(opt::ServerOpt::from_args());
 
+    actix::System::run(move || {
+        //let addr = net::SocketAddr::from_str(&format!("{}:{}",opt.socks_host,opt.socks_port)).unwrap();
         // Create server listener
 //        let connector=connector::quic::QuicServerConnector::new_dangerous();
         let connector=connector::tcp::TcpConnector{};
-        connector.listen("127.0.0.1:12346",move|s|{
+        connector.listen(&format!("{}:{}",opt.proxy_host,opt.proxy_port),move|s|{
             ProxyServer::create(|ctx| {
                 ctx.add_message_stream(s.map(|st| {
                     connector::ConnectorMessage{

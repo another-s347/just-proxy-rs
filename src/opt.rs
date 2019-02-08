@@ -1,7 +1,7 @@
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "basic")]
+#[structopt(name = "client")]
 pub struct ClientOpt {
 
     // The number of occurrences of the `v/verbose` flag
@@ -19,5 +19,21 @@ pub struct ClientOpt {
     pub socks_port: i64,
 
     #[structopt(short = "P", long = "proxy-port", default_value="12346")]
+    pub proxy_port: i64,
+}
+
+#[derive(StructOpt, Debug)]
+#[structopt(name = "server")]
+pub struct ServerOpt {
+
+    // The number of occurrences of the `v/verbose` flag
+    /// Verbose mode (-v, -vv, -vvv, etc.)
+    #[structopt(short = "v", long = "verbose")]
+    pub verbose: bool,
+
+    #[structopt(short = "l", long = "proxy-host", default_value = "0.0.0.0")]
+    pub proxy_host: String,
+
+    #[structopt(short = "p", long = "proxy-port", default_value="12346")]
     pub proxy_port: i64,
 }
