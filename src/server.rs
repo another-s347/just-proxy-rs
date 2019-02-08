@@ -4,6 +4,10 @@
 extern crate failure;
 #[macro_use]
 extern crate structopt;
+#[macro_use]
+extern crate slog;
+extern crate slog_async;
+extern crate slog_term;
 
 use std::net;
 use std::str::FromStr;
@@ -25,6 +29,7 @@ use std::time::{Instant, Duration};
 use structopt::StructOpt;
 use quinn::BiStream;
 use tokio::io::ReadHalf;
+use slog::Drain;
 
 mod message;
 mod connector;
@@ -48,7 +53,8 @@ pub struct ProxyEndpointConnection<W> where W: AsyncWrite + 'static {
 pub struct ProxyConnectionSend(Vec<u8>);
 
 pub struct ProxyServer<W> where W: AsyncWrite + 'static {
-    clients: Vec<Addr<ProxyClient<W>>>
+    clients: Vec<Addr<ProxyClient<W>>>,
+    logger:slog::Logger
 }
 
 pub struct ProxyClient<W>
@@ -56,6 +62,7 @@ pub struct ProxyClient<W>
 {
     writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>,
     connections: HashMap<uuid::Uuid, Addr<ProxyEndpointConnection<W>>>,
+    logger:slog::Logger
 }
 
 //#[derive(Message)]
@@ -87,7 +94,7 @@ impl<W> StreamHandler<Vec<u8>, io::Error> for ProxyEndpointConnection<W>
     where W: AsyncWrite + 'static
 {
     fn handle(&mut self, item: Vec<u8>, ctx: &mut Self::Context) {
-        println!("send to client,len {}", item.len());
+        //println!("send to client,len {}", item.len());
         self.client.do_send(ActorMessage::ProxyResponse::new(
             self.uuid.clone(),
             ActorMessage::ProxyTransfer::Data(item),
@@ -139,18 +146,20 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
     fn handle(&mut self, item: ActorMessage::ProxyRequest, ctx: &mut Self::Context) {
         let uuid = item.uuid;
         let request = item.request;
+        let logger_clone = self.logger.clone();
         match request {
             ActorMessage::ProxyTransfer::RequestAddr(addr) => {
                 let client_addr = ctx.address();
                 let client_addr_cloned = client_addr.clone();
                 let start = Instant::now();
-                Connector::from_registry()
+                let f=Connector::from_registry()
                     .send(Connect::host(addr.clone()))
                     .into_actor(self)
                     .map(move |res, _act, ctx| match res {
                         Ok(stream) => {
                             let cost = Instant::now().duration_since(start);
-                            println!("connected addr:{}, cost:{} millis", addr, cost.as_millis());
+                            info!(logger_clone,"connected addr:{}, cost:{} millis", addr, cost.as_millis());
+                            //println!("connected addr:{}, cost:{} millis", addr, cost.as_millis());
                             //println!("connected in proxy server");
                             let (r, w):(ReadHalf<_>,_) = stream.split();
                             let client_addr_c = client_addr.clone();
@@ -187,8 +196,8 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
                             ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::ConnectionRefused),
                         ));
                         ctx.stop();
-                    })
-                    .wait(ctx);
+                    });
+                ctx.spawn(f);
             }
             ActorMessage::ProxyTransfer::Data(data) => {
                 if let Some(conn) = self.connections.get(&uuid) {
@@ -201,6 +210,7 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
                 panic!()
             }
             ActorMessage::ProxyTransfer::Heartbeat => {
+                info!(self.logger,"echo heartbeat");
                 self.writer.write(ActorMessage::ProxyResponse::new(
                     uuid,
                     ActorMessage::ProxyTransfer::Heartbeat,
@@ -224,45 +234,56 @@ impl<W> Handler<connector::ConnectorMessage<W>> for ProxyServer<W>
 
     fn handle(&mut self, msg: connector::ConnectorMessage<W>, ctx: &mut Self::Context) -> Self::Result {
         let (r, w) = msg.connector.split();
+        let proxy_client_logger = self.logger.new(o!("client"=>""));
         let addr = ProxyClient::create(move |ctx| {
             ProxyClient::add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec), ctx);
             let writer = actix::io::FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
             ProxyClient {
                 writer,
                 connections: HashMap::new(),
+                logger:proxy_client_logger
             }
         });
         self.clients.push(addr);
     }
 }
 
-fn listen_callback<W>(s: Box<Stream<Item=W, Error=()>>)
+fn listen_callback<W>(logger:slog::Logger)->impl FnOnce(Box<Stream<Item=W, Error=()>>)
     where W:AsyncRead+AsyncWrite+'static
 {
-    ProxyServer::create(|ctx| {
-        ctx.add_message_stream(s.map(|st| {
-            connector::ConnectorMessage {
-                connector: st
+    move|s|{
+        ProxyServer::create(|ctx| {
+            ctx.add_message_stream(s.map(|st| {
+                connector::ConnectorMessage {
+                    connector: st
+                }
+            }));
+            ProxyServer {
+                clients: Vec::new(),
+                logger
             }
-        }));
-        ProxyServer {
-            clients: Vec::new()
-        }
-    });
+        });
+    }
 }
 
 fn main() {
     let opt: opt::ServerOpt = dbg!(opt::ServerOpt::from_args());
 
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    let log = slog::Logger::root(drain, o!("version" => "0.5"));
+
     actix::System::run(move || {
         match opt.protocol.as_str() {
             "tcp" => {
                 let connector = connector::tcp::TcpConnector{};
-                connector.listen(&format!("{}:{}", opt.proxy_host, opt.proxy_port), listen_callback);
+                connector.listen(&format!("{}:{}", opt.proxy_host, opt.proxy_port), listen_callback(log));
             },
             "quic" => {
                 let connector=connector::quic::QuicServerConnector::new_dangerous();
-                connector.listen(&format!("{}:{}", opt.proxy_host, opt.proxy_port), listen_callback);
+                connector.listen(&format!("{}:{}", opt.proxy_host, opt.proxy_port), listen_callback(log));
             },
             _ => panic!("unsupported protocol")
         };

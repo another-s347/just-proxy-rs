@@ -39,7 +39,7 @@ use structopt::StructOpt;
 use slog::Drain;
 use slog::*;
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct Server<W>
     where W: AsyncWrite + 'static
@@ -79,6 +79,7 @@ impl<W> Server<W> where W: AsyncWrite + 'static {
 //                return;
             }
             else {
+                info!(hb_logger,"send heartbeat");
                 ctx.address().do_send(Heartbeat);
             }
         });
@@ -107,7 +108,7 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
                 ActorMessage::ProxyTransfer::Heartbeat => {
                     let hb_rtt=Instant::now().duration_since(self.last_hb_instant).as_millis();
                     self.hb=Instant::now();
-                    debug!(self.logger,"recv heartbeat rtt:{} millis",hb_rtt);
+                    info!(self.logger,"recv heartbeat rtt:{} millis",hb_rtt);
                 }
                 _=>{
                     panic!()
@@ -220,7 +221,7 @@ fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String)
 fn main() {
     let opt:opt::ClientOpt = dbg!(opt::ClientOpt::from_args());
 
-    let decorator = slog_term::PlainDecorator::new(std::io::stdout());
+    let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::CompactFormat::new(decorator).build().fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
 
