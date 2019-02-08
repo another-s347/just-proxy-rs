@@ -27,7 +27,5 @@ impl ProxyListener<TcpStream> for TcpConnector {
         let listener = TcpListener::bind(&addr).unwrap();
 
         f(Box::new(listener.incoming().map_err(|_|())));
-
-        println!("Running chat server on 127.0.0.1:12346");
     }
 }

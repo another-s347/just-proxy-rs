@@ -108,12 +108,12 @@ impl<W> Handler<ActorMessage::ConnectorResponse> for SocksClient<W> where W:Asyn
     }
 }
 
-impl<W> StreamHandler<Vec<u8>, io::Error> for SocksClient<W> where W:AsyncWrite+'static {
-    fn handle(&mut self, item: Vec<u8>, ctx: &mut Self::Context) {
-        print!("???");
-        self.writer.write(SocksMessage::SocksResponse::Data(item));
-    }
-}
+//impl<W> StreamHandler<Vec<u8>, io::Error> for SocksClient<W> where W:AsyncWrite+'static {
+//    fn handle(&mut self, item: Vec<u8>, ctx: &mut Self::Context) {
+//        print!("???");
+//        self.writer.write(SocksMessage::SocksResponse::Data(item));
+//    }
+//}
 
 impl<W> StreamHandler<SocksMessage::SocksRequest, io::Error> for SocksClient<W> where W:AsyncWrite+'static {
     fn handle(&mut self, item: SocksMessage::SocksRequest, ctx: &mut Self::Context) {

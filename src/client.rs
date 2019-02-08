@@ -46,7 +46,6 @@ pub struct Server<W>
 {
     clients: HashMap<uuid::Uuid, Addr<SocksClient<W>>>,
     writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyRequestCodec>,
-    //chat: Addr<ChatServer>,
     hb:Instant,
     logger: Logger,
     last_hb_instant:Instant
@@ -184,17 +183,39 @@ impl<W> Handler<SocksConnectedMessage> for Server<W>
             let writer = actix::io::FramedWrite::new(w, codec::Socks5ResponseCodec, ctx);
             SocksClient::new(uuid,writer,server_addr,logger.new(o!("uuid"=>uuid_str)))
         });
-//        let addr = SocksClient::create(move |ctx| {
-//            let uuid_str=uuid.to_string();
-//            SocksClient::add_stream(FramedRead::new(r, codec::Socks5RequestCodec::new()), ctx);
-//            let writer = actix::io::FramedWrite::new(w, codec::Socks5ResponseCodec, ctx);
-//            SocksClient::new(uuid,writer,server_addr,logger.new(o!("uuid"=>uuid_str)))
-//            //SocksClient { uuid, writer, server_addr , logger:logger.new(o!("uuid"=>uuid_str)), connect_request_record: (), connect_cost: (), send_bytes: 0, recv_bytes: 0 }
-//        });
         self.clients.insert(uuid_key, addr);
     }
 }
 
+
+
+fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String)->impl FnOnce(W)
+    where W:AsyncRead+AsyncWrite+'static
+{
+    move|stream:W|{
+        info!(log,"Connected to proxy server";"address"=>proxy_address_str.clone());
+        Server::create(move |ctx| {
+            ctx.add_message_stream(listener.incoming().map_err(|_| ()).map(|st| {
+                let addr = st.peer_addr().unwrap();
+                SocksConnectedMessage {
+                    connector: st
+                }
+            }));
+            let (r, w) = stream.split();
+            Server::add_stream(FramedRead::new(r, ActorMessage::ProxyResponseCodec), ctx);
+            let writer: FramedWrite<WriteHalf<_>, ActorMessage::ProxyRequestCodec> = FramedWrite::new(w, ActorMessage::ProxyRequestCodec, ctx);
+            let s=Server {
+                clients: HashMap::new(),
+                writer,
+                hb:Instant::now(),
+                logger: log.new(o!("address"=>proxy_address_str)),
+                last_hb_instant:Instant::now()
+            };
+            s.hb(ctx);
+            s
+        });
+    }
+}
 
 fn main() {
     let opt:opt::ClientOpt = dbg!(opt::ClientOpt::from_args());
@@ -208,34 +229,22 @@ fn main() {
     actix::System::run(move || {
         // Create server listener
         let addr = net::SocketAddr::from_str(&format!("{}:{}",opt.socks_host,opt.socks_port)).unwrap();
-        //let addr = net::SocketAddr::from_str("127.0.0.1:12345").unwrap();
         let listener = TcpListener::bind(&addr).unwrap();
-        //let connector = connector::quic::QuicClientConnector::new_dangerous();
-        let connector=connector::tcp::TcpConnector{};
-        let proxy_address_str=format!("{}:{}",opt.proxy_host,opt.proxy_port);
-        let f = connector.connect(&proxy_address_str.clone(), move |stream| {
-            info!(log,"Connected to proxy server";"address"=>proxy_address_str.clone());
-            Server::create(move |ctx| {
-                ctx.add_message_stream(listener.incoming().map_err(|_| ()).map(|st| {
-                    let addr = st.peer_addr().unwrap();
-                    SocksConnectedMessage {
-                        connector: st
-                    }
-                }));
-                let (r, w) = stream.split();
-                Server::add_stream(FramedRead::new(r, ActorMessage::ProxyResponseCodec), ctx);
-                let writer: FramedWrite<WriteHalf<_>, ActorMessage::ProxyRequestCodec> = FramedWrite::new(w, ActorMessage::ProxyRequestCodec, ctx);
-                let s=Server {
-                    clients: HashMap::new(),
-                    writer,
-                    hb:Instant::now(),
-                    logger: log.new(o!("address"=>proxy_address_str)),
-                    last_hb_instant:Instant::now()
-                };
-                s.hb(ctx);
-                s
-            });
-        });
+        let f=match opt.protocol.as_str() {
+            "tcp"=>{
+                let connector = connector::tcp::TcpConnector{};
+                let proxy_address_str=format!("{}:{}",opt.proxy_host,opt.proxy_port);
+                connector.connect(&proxy_address_str.clone(), connect_callback(log,listener,proxy_address_str.clone()))
+            }
+            "quic"=>{
+                let connector = connector::quic::QuicClientConnector::new_dangerous();
+                let proxy_address_str=format!("{}:{}",opt.proxy_host,opt.proxy_port);
+                connector.connect(&proxy_address_str.clone(), connect_callback(log,listener,proxy_address_str.clone()))
+            }
+            _=>{
+                panic!("unsupported protocol")
+            }
+        };
         actix::spawn(f);
     });
 }

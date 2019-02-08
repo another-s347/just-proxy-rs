@@ -12,7 +12,7 @@ pub struct ClientOpt {
     #[structopt(short = "l", long = "socks-host", default_value = "127.0.0.1")]
     pub socks_host:String,
 
-    #[structopt(short = "S", long = "proxy-host", default_value = "0.0.0.0")]
+    #[structopt(short = "S", long = "proxy-host", default_value = "127.0.0.1")]
     pub proxy_host: String,
 
     #[structopt(short = "p", long="socks-port", default_value = "12345")]
@@ -20,6 +20,9 @@ pub struct ClientOpt {
 
     #[structopt(short = "P", long = "proxy-port", default_value="12346")]
     pub proxy_port: i64,
+
+    #[structopt(long="protocol", default_value="tcp")]
+    pub protocol:String
 }
 
 #[derive(StructOpt, Debug)]
@@ -31,9 +34,12 @@ pub struct ServerOpt {
     #[structopt(short = "v", long = "verbose")]
     pub verbose: bool,
 
-    #[structopt(short = "l", long = "proxy-host", default_value = "0.0.0.0")]
+    #[structopt(short = "l", long = "proxy-host", default_value = "127.0.0.1")]
     pub proxy_host: String,
 
     #[structopt(short = "p", long = "proxy-port", default_value="12346")]
     pub proxy_port: i64,
+
+    #[structopt(long="protocol", default_value="tcp")]
+    pub protocol:String
 }
