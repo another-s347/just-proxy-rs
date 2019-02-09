@@ -6,12 +6,13 @@ use tokio::net::TcpStream;
 use uuid::Uuid;
 use bytes::buf::BufMut;
 use std::u32;
+use bytes::Bytes;
 
 #[derive(Message)]
 pub enum ConnectorResponse {
     Succeeded,
     Failed,
-    Data(Vec<u8>),
+    Data(Bytes),
 }
 
 pub enum ConnectionWriter {
@@ -21,14 +22,14 @@ pub enum ConnectionWriter {
 pub struct BytesCodec;
 
 impl tokio::codec::Decoder for BytesCodec {
-    type Item = Vec<u8>;
+    type Item = Bytes;
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.len() == 0 {
             return Ok(None);
         }
-        Ok(Some(src.take().to_vec()))
+        Ok(Some(src.take().freeze()))
     }
 }
 
@@ -85,7 +86,7 @@ pub enum ProxyTransferType {
 }
 
 pub enum ProxyTransfer {
-    Data(Vec<u8>),
+    Data(Bytes),
     RequestAddr(String),
     Response(ProxyResponseType),
     Heartbeat
@@ -130,14 +131,14 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
         let uuid_bytes= bytes.split_to(16);
         let transfer_type_byte:u8 = *bytes.get(4).unwrap();
         bytes.advance(5);
-        let data=bytes.to_vec();
+        let data=bytes.freeze();
         //dbg!(&data);
         let (transfer_type,response) = match transfer_type_byte {
             0x0=>{
                 (ProxyTransferType::Data,ProxyTransfer::Data(data))
             },
             0x1=>{
-                (ProxyTransferType::RequestAddr,ProxyTransfer::RequestAddr(String::from_utf8(data).unwrap()))
+                (ProxyTransferType::RequestAddr,ProxyTransfer::RequestAddr(String::from_utf8(data.to_vec()).unwrap()))
             },
             0x2=>{
                 if data.len()!=1 {
@@ -190,13 +191,13 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
         let uuid_bytes= bytes.split_to(16);
         let transfer_type_byte:u8 = *bytes.get(4).unwrap();
         bytes.advance(5);
-        let data=bytes.to_vec();
+        let data=bytes.freeze();
         let (transfer_type,request) = match transfer_type_byte {
             0x0=>{
                 (ProxyTransferType::Data,ProxyTransfer::Data(data))
             },
             0x1=>{
-                (ProxyTransferType::RequestAddr,ProxyTransfer::RequestAddr(String::from_utf8(data).unwrap()))
+                (ProxyTransferType::RequestAddr,ProxyTransfer::RequestAddr(String::from_utf8(data.to_vec()).unwrap()))
             },
             0x2=>{
                 if data.len()!=1 {

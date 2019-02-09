@@ -1,37 +1,30 @@
 use tokio::prelude::*;
 use actix::prelude::*;
-use std::time::{Instant, Duration};
+use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::io::{ReadHalf, WriteHalf};
 use actix::io::{Writer, FramedWrite};
 use std::collections::HashMap;
-use tokio::codec::FramedRead;
 use actix::actors::resolver;
 use crate::message as ActorMessage;
 use std::io;
+use bytes::Bytes;
 
 #[allow(dead_code)]
 #[derive(Message)]
-pub struct ConnectionEstablished<W> where W: AsyncWrite + 'static {
+pub struct ConnectionEstablished {
     uuid: uuid::Uuid,
-    addr: Addr<ProxyEndpointConnection<W>>,
-    cost: Duration,
-}
-
-pub struct ProxyEndpointConnection<W> where W: AsyncWrite + 'static {
-    uuid: uuid::Uuid,
-    client: Addr<ProxyClient<W>>,
-    writer: Writer<WriteHalf<TcpStream>, io::Error>,
+    writer: WriteHalf<TcpStream>
 }
 
 #[derive(Message)]
-pub struct ProxyConnectionSend(Vec<u8>);
+pub struct ProxyConnectionSend(Bytes);
 
 pub struct ProxyClient<W>
     where W: AsyncWrite + 'static
 {
     pub writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>,
-    pub connections: HashMap<uuid::Uuid, Addr<ProxyEndpointConnection<W>>>,
+    pub connections: HashMap<uuid::Uuid, Writer<WriteHalf<TcpStream>,io::Error>>,
     pub logger: slog::Logger,
     pub resolver: Addr<resolver::Resolver>,
 }
@@ -46,35 +39,6 @@ impl<W> Actor for ProxyClient<W>
     }
 }
 
-impl<W> Actor for ProxyEndpointConnection<W>
-    where W: AsyncWrite + 'static
-{
-    type Context = Context<Self>;
-}
-
-impl<W> StreamHandler<Vec<u8>, io::Error> for ProxyEndpointConnection<W>
-    where W: AsyncWrite + 'static
-{
-    fn handle(&mut self, item: Vec<u8>, _ctx: &mut Self::Context) {
-        self.client.do_send(ActorMessage::ProxyResponse::new(
-            self.uuid.clone(),
-            ActorMessage::ProxyTransfer::Data(item),
-        ))
-    }
-}
-
-impl<W> Handler<ProxyConnectionSend> for ProxyEndpointConnection<W>
-    where W: AsyncWrite + 'static
-{
-    type Result = ();
-
-    fn handle(&mut self, msg: ProxyConnectionSend, _ctx: &mut Self::Context) -> Self::Result {
-        self.writer.write(&msg.0);
-    }
-}
-
-impl<W> actix::io::WriteHandler<io::Error> for ProxyEndpointConnection<W> where W: AsyncWrite + 'static {}
-
 impl<W> Handler<ActorMessage::ProxyResponse> for ProxyClient<W>
     where W: AsyncWrite + 'static
 {
@@ -85,13 +49,13 @@ impl<W> Handler<ActorMessage::ProxyResponse> for ProxyClient<W>
     }
 }
 
-impl<W> Handler<ConnectionEstablished<W>> for ProxyClient<W>
-    where W: AsyncWrite + 'static
+impl<W> Handler<ConnectionEstablished> for ProxyClient<W>
+    where W:AsyncWrite+'static
 {
     type Result = ();
 
-    fn handle(&mut self, msg: ConnectionEstablished<W>, _ctx: &mut Self::Context) -> Self::Result {
-        self.connections.insert(msg.uuid.clone(), msg.addr);
+    fn handle(&mut self, msg: ConnectionEstablished, ctx: &mut Self::Context) -> Self::Result {
+        self.connections.insert(msg.uuid.clone(), Writer::new(msg.writer,ctx));
         self.writer.write(ActorMessage::ProxyResponse::new(
             msg.uuid,
             ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::Succeeded),
@@ -117,21 +81,21 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
                             let cost = Instant::now().duration_since(start);
                             info!(logger_clone, "connected addr:{}, cost:{} millis", addr, cost.as_millis());
                             let (r, w): (ReadHalf<_>, _) = tcpstream.split();
-                            let client_addr_c = client_addr.clone();
-                            let conn_addr = actix::Arbiter::start(move |ctx| {
-                                ProxyEndpointConnection::add_stream(FramedRead::new(r, ActorMessage::BytesCodec), ctx);
-                                let writer = Writer::new(w, ctx);
-                                ProxyEndpointConnection {
-                                    uuid,
-                                    client: client_addr,
-                                    writer,
-                                }
+                            let framedreader=tokio::codec::FramedRead::new(r,ActorMessage::BytesCodec);
+                            let reader_fut=framedreader.for_each(move|bytes| {
+                                client_addr.do_send(ActorMessage::ProxyResponse::new(
+                                    uuid.clone(),
+                                    ActorMessage::ProxyTransfer::Data(bytes),
+                                ));
+                                Ok(())
+                            }).map_err(|e|{
+                                dbg!(e);
                             });
-                            client_addr_c.do_send(ConnectionEstablished {
-                                uuid,
-                                addr: conn_addr,
-                                cost,
-                            })
+                            client_addr_cloned.do_send(ConnectionEstablished {
+                                uuid: uuid.clone(),
+                                writer: w
+                            });
+                            actix::Arbiter::spawn(reader_fut);
                         }
                         Ok(Err(err)) => {
                             println!("TcpClientActor failed to connected 1: {}", err);
@@ -169,8 +133,8 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
                 ctx.spawn(resolver_fut);
             }
             ActorMessage::ProxyTransfer::Data(data) => {
-                if let Some(conn) = self.connections.get(&uuid) {
-                    conn.do_send(ProxyConnectionSend(data));
+                if let Some(conn) = self.connections.get_mut(&uuid) {
+                    conn.write(data.as_ref());
                 } else {
                     panic!()
                 }
