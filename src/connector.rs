@@ -3,7 +3,6 @@ pub mod quic;
 
 use actix::prelude::*;
 use tokio::prelude::*;
-use std::io;
 
 #[derive(Message)]
 pub struct ConnectorMessage<W> {

@@ -1,9 +1,14 @@
 use tokio::prelude::*;
-use std::io;
 use tokio::net::{TcpStream,TcpListener};
 use std::net;
 use std::str::FromStr;
 use super::{ProxyConnector,ProxyListener};
+use tokio::codec::FramedRead;
+use actix::io::FramedWrite;
+use crate::component::server::ProxyClient;
+use std::collections::HashMap;
+use crate::message as ActorMessage;
+use actix::prelude::*;
 
 pub struct TcpConnector {}
 
@@ -18,6 +23,36 @@ impl ProxyConnector<TcpStream> for TcpConnector {
         }).map_err(|err| {
             dbg!(err);
         }))
+    }
+}
+
+impl TcpConnector {
+    pub fn run_server(self, addr: &str, logger: slog::Logger) {
+        let addr = net::SocketAddr::from_str(addr).unwrap();
+        let listener = TcpListener::bind(&addr).unwrap();
+
+        let t=listener.incoming().map_err(|e|{
+            dbg!(e);
+        }).for_each(move|s|{
+            let remote_address = match s.peer_addr() {
+                Ok(addr)=>addr.to_string(),
+                Err(e)=>e.to_string()
+            };
+            let (r, w) = s.split();
+            let proxy_client_logger = logger.new(o!("client"=>remote_address));
+            actix::Arbiter::start(move |ctx:&mut actix::Context<ProxyClient<TcpStream>>| {
+                ctx.add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec));
+                let writer = FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
+                ProxyClient {
+                    writer,
+                    connections: HashMap::new(),
+                    logger:proxy_client_logger,
+                    resolver:actix::actors::resolver::Resolver::from_registry()
+                }
+            });
+            Ok(())
+        });
+        actix::spawn(t);
     }
 }
 

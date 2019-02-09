@@ -1,6 +1,5 @@
 #[macro_use]
 extern crate failure;
-#[macro_use]
 extern crate structopt;
 #[macro_use]
 extern crate slog;
@@ -12,21 +11,18 @@ pub mod socks;
 pub mod connector;
 pub mod ext;
 pub mod opt;
+pub mod component;
 
 use std::net;
 use std::str::FromStr;
-
-use actix::actors::resolver::{Connect, Connector};
 use tokio::prelude::*;
 use tokio::io::WriteHalf;
 use actix::prelude::*;
-use actix::io::{FramedWrite, Writer};
+use actix::io::{FramedWrite};
 use tokio::codec::FramedRead;
-use tokio::net::{TcpStream, TcpListener};
-use byteorder::ReadBytesExt;
+use tokio::net::{TcpListener};
 use std::io;
-use quinn::BiStream;
-use packet_toolbox_rs::socks5::{message as SocksMessage, codec};
+use packet_toolbox_rs::socks5::codec;
 use message as ActorMessage;
 use uuid;
 use std::collections::HashMap;
@@ -34,7 +30,6 @@ use socks::SocksClient;
 use socks::SocksConnectedMessage;
 use connector::ProxyConnector;
 use std::time::{Duration, Instant};
-use uuid::prelude::*;
 use structopt::StructOpt;
 use slog::Drain;
 use slog::*;
@@ -63,9 +58,11 @@ impl<W> Server<W> where W: AsyncWrite + 'static {
         let hb_logger=self.logger.clone();
         ctx.run_interval(HEARTBEAT_INTERVAL, move |act, ctx| {
             // check client heartbeats
-            if Instant::now().duration_since(act.hb) > Duration::from_secs(10) {
+            let now=Instant::now();
+            let hb_duration=now.duration_since(act.hb);
+            if hb_duration > Duration::from_secs(10) {
                 // heartbeat timed out
-                info!(hb_logger,"heartbeat failed, disconnecting!");
+                info!(hb_logger,"heartbeat failed, disconnecting!";"duration"=>hb_duration.as_millis());
 
                 // notify chat server
 //                ctx.state()
@@ -93,14 +90,14 @@ impl<W> Handler<message::ProxyRequest> for Server<W> where W: AsyncWrite + 'stat
 {
     type Result = ();
 
-    fn handle(&mut self, msg: ActorMessage::ProxyRequest, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ActorMessage::ProxyRequest, _ctx: &mut Self::Context) -> Self::Result {
         self.writer.write(msg)
     }
 }
 
 impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: AsyncWrite + 'static
 {
-    fn handle(&mut self, item: ActorMessage::ProxyResponse, ctx: &mut Self::Context) {
+    fn handle(&mut self, item: ActorMessage::ProxyResponse, _ctx: &mut Self::Context) {
         let uuid = item.uuid;
         let response = item.response;
         if uuid.is_nil() {
@@ -153,7 +150,7 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
 impl<W> Handler<Heartbeat> for Server<W> where W:AsyncWrite+'static {
     type Result = ();
 
-    fn handle(&mut self, msg: Heartbeat, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _: Heartbeat, _ctx: &mut Self::Context) -> Self::Result {
         self.last_hb_instant=Instant::now();
         self.writer.write(ActorMessage::ProxyRequest::new(
             uuid::Uuid::nil(),
@@ -172,7 +169,7 @@ impl<W> Handler<SocksConnectedMessage> for Server<W>
     /// in this case we just return unit.
     type Result = ();
 
-    fn handle(&mut self, mut msg: SocksConnectedMessage, ctx: &mut Context<Self>) {
+    fn handle(&mut self, msg: SocksConnectedMessage, ctx: &mut Context<Self>) {
         let (r, w) = msg.connector.split();
         let uuid = uuid::Uuid::new_v4();
         let uuid_key = uuid.clone();
@@ -197,7 +194,6 @@ fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String)
         info!(log,"Connected to proxy server";"address"=>proxy_address_str.clone());
         Server::create(move |ctx| {
             ctx.add_message_stream(listener.incoming().map_err(|_| ()).map(|st| {
-                let addr = st.peer_addr().unwrap();
                 SocksConnectedMessage {
                     connector: st
                 }

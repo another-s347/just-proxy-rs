@@ -1,10 +1,7 @@
-use tokio::codec::{Decoder, Encoder};
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
-use packet_toolbox_rs::socks5;
 use std::io;
 use actix::prelude::*;
-use packet_toolbox_rs::socks5::message;
 use tokio::net::TcpStream;
 use uuid::Uuid;
 use bytes::buf::BufMut;
