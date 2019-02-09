@@ -60,9 +60,9 @@ impl<W> Server<W> where W: AsyncWrite + 'static {
             // check client heartbeats
             let now=Instant::now();
             let hb_duration=now.duration_since(act.hb);
-            if hb_duration > Duration::from_secs(10) {
+            if hb_duration > Duration::from_secs(15) {
                 // heartbeat timed out
-                info!(hb_logger,"heartbeat failed, disconnecting!";"duration"=>hb_duration.as_millis());
+                info!(hb_logger,"heartbeat failed, disconnecting!";"duration"=>hb_duration.as_secs());
 
                 // notify chat server
 //                ctx.state()

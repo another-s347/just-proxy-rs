@@ -126,10 +126,8 @@ impl actix::Actor for QuicServerStreamAgent {
     type Context = actix::Context<Self>;
 }
 
-impl actix::Handler<NewQuicStream> for QuicServerStreamAgent {
-    type Result = ();
-
-    fn handle(&mut self, msg: NewQuicStream, _ctx: &mut Self::Context) -> Self::Result {
+impl actix::StreamHandler<NewQuicStream,quinn::ConnectionError> for QuicServerStreamAgent {
+    fn handle(&mut self, msg: NewQuicStream, _ctx: &mut Self::Context) {
         let bistream = msg.0;
         let (r, w) = bistream.split();
         let proxy_client_logger = self.logger.clone();
@@ -159,7 +157,8 @@ impl QuicServerConnector {
         endpoint.listen(self.server_config);
         let (_, driver, incoming) = endpoint.bind(addr).unwrap();
         let s = incoming.for_each(move |conn:NewConnection| {
-            let remote_addr=conn.connection.remote_address();
+            let connection = conn.connection;
+            let remote_addr=connection.remote_address();
             let incoming = conn.incoming;
             let client_logger = logger.new(o!("client"=>remote_addr.to_string()));
             QuicServerStreamAgent::create(move|ctx:&mut Context<QuicServerStreamAgent>| {
@@ -169,10 +168,8 @@ impl QuicServerConnector {
                         quinn::NewStream::Uni(_) => unreachable!("disabled by endpoint configuration"),
                     };
                     NewQuicStream(bistream)
-                }).map_err(|e|{
-                    dbg!(e);
                 });
-                ctx.add_message_stream(incoming_stream);
+                ctx.add_stream(incoming_stream);
                 QuicServerStreamAgent {
                     remote_addr,
                     logger:client_logger
