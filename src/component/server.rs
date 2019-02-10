@@ -26,7 +26,7 @@ pub struct ProxyClient<W>
 {
     pub write_sender:UnboundedSender<ActorMessage::ProxyResponse>,
     pub writer: Option<FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>>,
-    pub connections: HashMap<uuid::Uuid, Writer<WriteHalf<TcpStream>,io::Error>>,
+    pub connections: HashMap<uuid::Uuid, WriteHalf<TcpStream>>,
     pub logger: slog::Logger,
     pub resolver: Addr<resolver::Resolver>,
 }
@@ -58,7 +58,7 @@ impl<W> Handler<ConnectionEstablished> for ProxyClient<W>
     type Result = ();
 
     fn handle(&mut self, msg: ConnectionEstablished, ctx: &mut Self::Context) -> Self::Result {
-        self.connections.insert(msg.uuid.clone(), Writer::new(msg.writer,ctx));
+        self.connections.insert(msg.uuid.clone(), msg.writer);
         self.write_sender.unbounded_send(ActorMessage::ProxyResponse::new(
             msg.uuid,
             ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::Succeeded),
@@ -141,7 +141,10 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
             }
             ActorMessage::ProxyTransfer::Data(data) => {
                 if let Some(conn) = self.connections.get_mut(&uuid) {
-                    conn.write(data.as_ref());
+                    let r=conn.write(data.as_ref());
+                    if r.is_err() {
+                        dbg!(r);
+                    }
                 } else {
                     panic!()
                 }
@@ -169,9 +172,9 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
     }
 }
 
-impl<W> actix::io::WriteHandler<io::Error> for ProxyClient<W> where W: AsyncWrite + 'static {
-    fn error(&mut self, err: io::Error, ctx: &mut Self::Context) -> Running {
-        dbg!(err);
-        Running::Continue
-    }
-}
+//impl<W> actix::io::WriteHandler<io::Error> for ProxyClient<W> where W: AsyncWrite + 'static {
+//    fn error(&mut self, err: io::Error, ctx: &mut Self::Context) -> Running {
+//        dbg!(err);
+//        Running::Continue
+//    }
+//}
