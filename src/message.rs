@@ -78,6 +78,7 @@ impl ProxyResponse {
     }
 }
 
+#[derive(Debug)]
 pub enum ProxyTransferType {
     Data = 0x0,
     RequestAddr = 0x1,
@@ -85,6 +86,7 @@ pub enum ProxyTransferType {
     Heartbeat = 0x3
 }
 
+#[derive(Debug)]
 pub enum ProxyTransfer {
     Data(Bytes),
     RequestAddr(String),
@@ -92,13 +94,14 @@ pub enum ProxyTransfer {
     Heartbeat
 }
 
+#[derive(Debug)]
 pub enum ProxyResponseType {
     Succeeded = 0x0,
     ConnectionRefused = 0x1,
     Timeout = 0x2,
 }
 
-#[derive(Message)]
+#[derive(Message,Debug)]
 pub struct ProxyResponse {
     pub uuid: Uuid,
     transfer_len: usize,

@@ -9,6 +9,7 @@ use actix::actors::resolver;
 use crate::message as ActorMessage;
 use std::io;
 use bytes::Bytes;
+use futures::sync::mpsc::UnboundedSender;
 
 #[allow(dead_code)]
 #[derive(Message)]
@@ -23,7 +24,8 @@ pub struct ProxyConnectionSend(Bytes);
 pub struct ProxyClient<W>
     where W: AsyncWrite + 'static
 {
-    pub writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>,
+    pub write_sender:UnboundedSender<ActorMessage::ProxyResponse>,
+    pub writer: Option<FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>>,
     pub connections: HashMap<uuid::Uuid, Writer<WriteHalf<TcpStream>,io::Error>>,
     pub logger: slog::Logger,
     pub resolver: Addr<resolver::Resolver>,
@@ -45,7 +47,8 @@ impl<W> Handler<ActorMessage::ProxyResponse> for ProxyClient<W>
     type Result = ();
 
     fn handle(&mut self, msg: ActorMessage::ProxyResponse, _ctx: &mut Self::Context) -> Self::Result {
-        self.writer.write(msg)
+        self.write_sender.unbounded_send(msg).unwrap();
+        //self.writer.write(msg)
     }
 }
 
@@ -56,10 +59,14 @@ impl<W> Handler<ConnectionEstablished> for ProxyClient<W>
 
     fn handle(&mut self, msg: ConnectionEstablished, ctx: &mut Self::Context) -> Self::Result {
         self.connections.insert(msg.uuid.clone(), Writer::new(msg.writer,ctx));
-        self.writer.write(ActorMessage::ProxyResponse::new(
+        self.write_sender.unbounded_send(ActorMessage::ProxyResponse::new(
             msg.uuid,
             ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::Succeeded),
-        ))
+        )).unwrap();
+//        self.writer.write(ActorMessage::ProxyResponse::new(
+//            msg.uuid,
+//            ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::Succeeded),
+//        ))
     }
 }
 
@@ -144,10 +151,14 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
             }
             ActorMessage::ProxyTransfer::Heartbeat => {
                 info!(self.logger, "echo heartbeat");
-                self.writer.write(ActorMessage::ProxyResponse::new(
+                self.write_sender.unbounded_send(ActorMessage::ProxyResponse::new(
                     uuid,
                     ActorMessage::ProxyTransfer::Heartbeat,
-                ));
+                )).unwrap();
+//                self.writer.write(ActorMessage::ProxyResponse::new(
+//                    uuid,
+//                    ActorMessage::ProxyTransfer::Heartbeat,
+//                ));
             }
         }
     }
@@ -158,4 +169,9 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
     }
 }
 
-impl<W> actix::io::WriteHandler<io::Error> for ProxyClient<W> where W: AsyncWrite + 'static {}
+impl<W> actix::io::WriteHandler<io::Error> for ProxyClient<W> where W: AsyncWrite + 'static {
+    fn error(&mut self, err: io::Error, ctx: &mut Self::Context) -> Running {
+        dbg!(err);
+        Running::Continue
+    }
+}

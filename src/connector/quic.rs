@@ -15,6 +15,9 @@ use slog::Logger;
 use tokio::io::{AsyncRead};
 use crate::message as ActorMessage;
 use actix::io::FramedWrite;
+use tokio::sync::mpsc::error::UnboundedRecvError;
+use tokio::prelude::*;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub struct QuicClientConnector {
     pub endpoint: Endpoint,
@@ -131,11 +134,22 @@ impl actix::StreamHandler<NewQuicStream,quinn::ConnectionError> for QuicServerSt
         let bistream = msg.0;
         let (r, w) = bistream.split();
         let proxy_client_logger = self.logger.clone();
-        ProxyClient::create(move |ctx| {
+        ProxyClient::create(move |ctx:&mut Context<ProxyClient<BiStream>>| {
             ProxyClient::add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec), ctx);
-            let writer = FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
+            let (tx,rx)=futures::sync::mpsc::unbounded();
+            let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec);
+            let actions = rx.forward(framed_writer.sink_map_err(|e|{
+                dbg!(e);
+            })).map_err(|e|{
+                dbg!(e);
+            }).map(|_|());
+            tokio_current_thread::spawn(actions);
+            //tokio::run(actions);
+            //let writer = FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
             ProxyClient {
-                writer,
+                write_sender:tx,
+                writer:None,
+                //writer,
                 connections: HashMap::new(),
                 logger:proxy_client_logger,
                 resolver:actix::actors::resolver::Resolver::from_registry()
