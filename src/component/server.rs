@@ -152,11 +152,11 @@ impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
             ActorMessage::ProxyTransfer::Response(_) => {
                 panic!()
             }
-            ActorMessage::ProxyTransfer::Heartbeat => {
+            ActorMessage::ProxyTransfer::Heartbeat(index) => {
                 info!(self.logger, "echo heartbeat");
                 self.write_sender.unbounded_send(ActorMessage::ProxyResponse::new(
                     uuid,
-                    ActorMessage::ProxyTransfer::Heartbeat,
+                    ActorMessage::ProxyTransfer::Heartbeat(index),
                 )).unwrap();
 //                self.writer.write(ActorMessage::ProxyResponse::new(
 //                    uuid,

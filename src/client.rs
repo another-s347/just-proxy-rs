@@ -42,6 +42,7 @@ pub struct Server<W>
     clients: HashMap<uuid::Uuid, Addr<SocksClient<W>>>,
     writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyRequestCodec>,
     hb:Instant,
+    hb_index:u32,
     logger: Logger,
     last_hb_instant:Instant
 }
@@ -70,7 +71,7 @@ impl<W> Server<W> where W: AsyncWrite + 'static {
 //                    .do_send(server::Disconnect { id: act.id });
 //
 //                // stop actor
-                ctx.stop();
+                //ctx.stop();
 //
 //                // don't try to send a ping
 //                return;
@@ -102,10 +103,10 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
         let response = item.response;
         if uuid.is_nil() {
             match response {
-                ActorMessage::ProxyTransfer::Heartbeat => {
+                ActorMessage::ProxyTransfer::Heartbeat(i) => {
                     let hb_rtt=Instant::now().duration_since(self.last_hb_instant).as_millis();
                     self.hb=Instant::now();
-                    info!(self.logger,"recv heartbeat rtt:{} millis",hb_rtt);
+                    info!(self.logger,"recv heartbeat rtt:{} millis, index {}",hb_rtt,i);
                 }
                 _=>{
                     panic!()
@@ -134,7 +135,7 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
                         }
                     }
                 }
-                ActorMessage::ProxyTransfer::Heartbeat => {
+                ActorMessage::ProxyTransfer::Heartbeat(_) => {
                     panic!()
                 }
             }
@@ -152,9 +153,10 @@ impl<W> Handler<Heartbeat> for Server<W> where W:AsyncWrite+'static {
 
     fn handle(&mut self, _: Heartbeat, _ctx: &mut Self::Context) -> Self::Result {
         self.last_hb_instant=Instant::now();
+        self.hb_index+=1;
         self.writer.write(ActorMessage::ProxyRequest::new(
             uuid::Uuid::nil(),
-            ActorMessage::ProxyTransfer::Heartbeat
+            ActorMessage::ProxyTransfer::Heartbeat(self.hb_index)
         ))
     }
 }
@@ -204,6 +206,7 @@ fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String)
             let s=Server {
                 clients: HashMap::new(),
                 writer,
+                hb_index:0,
                 hb:Instant::now(),
                 logger: log.new(o!("address"=>proxy_address_str)),
                 last_hb_instant:Instant::now()
