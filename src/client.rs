@@ -77,7 +77,6 @@ impl<W> Server<W> where W: AsyncWrite + 'static {
 //                return;
             }
             else {
-                info!(hb_logger,"send heartbeat");
                 ctx.address().do_send(Heartbeat);
             }
         });
@@ -154,6 +153,7 @@ impl<W> Handler<Heartbeat> for Server<W> where W:AsyncWrite+'static {
     fn handle(&mut self, _: Heartbeat, _ctx: &mut Self::Context) -> Self::Result {
         self.last_hb_instant=Instant::now();
         self.hb_index+=1;
+        info!(self.logger,"send heartbeat {}",self.hb_index);
         self.writer.write(ActorMessage::ProxyRequest::new(
             uuid::Uuid::nil(),
             ActorMessage::ProxyTransfer::Heartbeat(self.hb_index)

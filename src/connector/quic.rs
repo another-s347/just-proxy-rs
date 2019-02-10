@@ -134,7 +134,7 @@ impl actix::StreamHandler<NewQuicStream,quinn::ConnectionError> for QuicServerSt
         let bistream = msg.0;
         let (r, w) = bistream.split();
         let proxy_client_logger = self.logger.clone();
-        ProxyClient::create(move |ctx:&mut Context<ProxyClient<BiStream>>| {
+        ProxyClient::create(move |ctx:&mut Context<ProxyClient>| {
             ProxyClient::add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec), ctx);
             let (tx,rx)=futures::sync::mpsc::unbounded();
             let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec);
@@ -144,12 +144,8 @@ impl actix::StreamHandler<NewQuicStream,quinn::ConnectionError> for QuicServerSt
                 dbg!(e);
             }).map(|_|());
             tokio_current_thread::spawn(actions);
-            //tokio::run(actions);
-            //let writer = FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
             ProxyClient {
                 write_sender:tx,
-                writer:None,
-                //writer,
                 connections: HashMap::new(),
                 logger:proxy_client_logger,
                 resolver:actix::actors::resolver::Resolver::from_registry()

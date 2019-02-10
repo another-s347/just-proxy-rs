@@ -33,23 +33,29 @@ impl TcpConnector {
         let t=listener.incoming().map_err(|e|{
             dbg!(e);
         }).for_each(move|s|{
-            panic!();
-//            let remote_address = match s.peer_addr() {
-//                Ok(addr)=>addr.to_string(),
-//                Err(e)=>e.to_string()
-//            };
-//            let (r, w) = s.split();
-//            let proxy_client_logger = logger.new(o!("client"=>remote_address));
-//            actix::Arbiter::start(move |ctx:&mut actix::Context<ProxyClient<TcpStream>>| {
-//                ctx.add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec));
-//                let writer = FramedWrite::new(w, ActorMessage::ProxyResponseCodec, ctx);
-//                ProxyClient {
-//                    writer,
-//                    connections: HashMap::new(),
-//                    logger:proxy_client_logger,
-//                    resolver:actix::actors::resolver::Resolver::from_registry()
-//                }
-//            });
+            let remote_address = match s.peer_addr() {
+                Ok(addr)=>addr.to_string(),
+                Err(e)=>e.to_string()
+            };
+            let proxy_client_logger = logger.new(o!("client"=>remote_address));
+            actix::Arbiter::start(move |ctx:&mut actix::Context<ProxyClient>| {
+                let (r, w) = s.split();
+                let (tx,rx)=futures::sync::mpsc::unbounded();
+                let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec);
+                let actions = rx.forward(framed_writer.sink_map_err(|e|{
+                    dbg!(e);
+                })).map_err(|e|{
+                    dbg!(e);
+                }).map(|_|());
+                tokio_current_thread::spawn(actions);
+                ctx.add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec));
+                ProxyClient {
+                    write_sender:tx,
+                    connections: HashMap::new(),
+                    logger:proxy_client_logger,
+                    resolver:actix::actors::resolver::Resolver::from_registry()
+                }
+            });
             Ok(())
         });
         actix::spawn(t);

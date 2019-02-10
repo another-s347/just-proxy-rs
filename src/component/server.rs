@@ -21,18 +21,16 @@ pub struct ConnectionEstablished {
 #[derive(Message)]
 pub struct ProxyConnectionSend(Bytes);
 
-pub struct ProxyClient<W>
-    where W: AsyncWrite + 'static
+pub struct ProxyClient
 {
     pub write_sender:UnboundedSender<ActorMessage::ProxyResponse>,
-    pub writer: Option<FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>>,
+    //pub writer: Option<FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>>,
     pub connections: HashMap<uuid::Uuid, WriteHalf<TcpStream>>,
     pub logger: slog::Logger,
     pub resolver: Addr<resolver::Resolver>,
 }
 
-impl<W> Actor for ProxyClient<W>
-    where W: AsyncWrite + 'static
+impl Actor for ProxyClient
 {
     type Context = Context<Self>;
 
@@ -41,8 +39,7 @@ impl<W> Actor for ProxyClient<W>
     }
 }
 
-impl<W> Handler<ActorMessage::ProxyResponse> for ProxyClient<W>
-    where W: AsyncWrite + 'static
+impl Handler<ActorMessage::ProxyResponse> for ProxyClient
 {
     type Result = ();
 
@@ -52,8 +49,7 @@ impl<W> Handler<ActorMessage::ProxyResponse> for ProxyClient<W>
     }
 }
 
-impl<W> Handler<ConnectionEstablished> for ProxyClient<W>
-    where W:AsyncWrite+'static
+impl Handler<ConnectionEstablished> for ProxyClient
 {
     type Result = ();
 
@@ -70,8 +66,7 @@ impl<W> Handler<ConnectionEstablished> for ProxyClient<W>
     }
 }
 
-impl<W> StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient<W>
-    where W: AsyncWrite + 'static
+impl StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient
 {
     fn handle(&mut self, item: ActorMessage::ProxyRequest, ctx: &mut Self::Context) {
         let uuid = item.uuid;
