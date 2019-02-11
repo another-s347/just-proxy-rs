@@ -1,3 +1,5 @@
+#![feature(nonzero)]
+
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use std::io;
@@ -7,6 +9,8 @@ use uuid::Uuid;
 use bytes::buf::BufMut;
 use std::u32;
 use bytes::Bytes;
+use ring;
+use core::num::NonZeroU32;
 
 #[derive(Message)]
 pub enum ConnectorResponse {
@@ -109,7 +113,29 @@ pub struct ProxyResponse {
     pub response: ProxyTransfer,
 }
 
-pub struct ProxyResponseCodec;
+pub struct ProxyResponseCodec{
+    crypto_algorithm:&'static ring::aead::Algorithm,
+    opening_key:ring::aead::OpeningKey,
+    sealing_key:ring::aead::SealingKey,
+    nonce_bytes:[u8;12],
+    tag_len:usize
+}
+
+impl ProxyResponseCodec {
+    pub fn new() -> ProxyResponseCodec {
+        let password = b"password";
+        let salt = [1;3];
+        let mut key_bytes=[0;32];
+        ring::pbkdf2::derive(&ring::digest::SHA256, NonZeroU32::new(1).unwrap() , &salt, &[1,2,3], &mut key_bytes);
+        ProxyResponseCodec {
+            crypto_algorithm: &ring::aead::AES_256_GCM,
+            opening_key: ring::aead::OpeningKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
+            sealing_key: ring::aead::SealingKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
+            nonce_bytes: [1;12],
+            tag_len: ring::aead::AES_256_GCM.tag_len()
+        }
+    }
+}
 
 impl tokio::codec::Decoder for ProxyResponseCodec {
     type Item = ProxyResponse;
@@ -130,12 +156,23 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
         if src.len() < all_len {
             return Ok(None);
         }
-        let mut bytes = src.split_to(all_len);
+        let mut bytes = src.split_to(all_len+self.tag_len);
         let uuid_bytes= bytes.split_to(16);
-        let transfer_type_byte:u8 = *bytes.get(4).unwrap();
-        bytes.advance(5);
-        let data=bytes.freeze();
-        //dbg!(&data);
+        bytes.advance(4);
+        let mut key_bytes = [0; 32];
+        let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
+        let aad = ring::aead::Aad::from(uuid_bytes.as_ref());
+        let mut dec_place=bytes.as_mut();
+        let dec_bytes_result=ring::aead::open_in_place(&self.opening_key,nonce,aad,0,dec_place);
+        let dec_bytes=if let Ok(dec)=dec_bytes_result {
+            dec
+        }
+        else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"dec error"));
+        };
+        let transfer_type_byte = dec_bytes[0];
+        bytes.advance(1);
+        let data= bytes.split_to(transfer_len as usize).freeze();
         let (transfer_type,response) = match transfer_type_byte {
             0x0=>{
                 (ProxyTransferType::Data,ProxyTransfer::Data(data))
@@ -170,7 +207,30 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
     }
 }
 
-pub struct ProxyRequestCodec;
+pub struct ProxyRequestCodec{
+    crypto_algorithm:&'static ring::aead::Algorithm,
+    opening_key:ring::aead::OpeningKey,
+    sealing_key:ring::aead::SealingKey,
+    nonce_bytes:[u8;12],
+    tag_len:usize
+}
+
+impl ProxyRequestCodec {
+    pub fn new() -> ProxyRequestCodec {
+        let password = b"password";
+        let salt = [1;3];
+        let mut key_bytes=[0;32];
+        ring::pbkdf2::derive(&ring::digest::SHA256, NonZeroU32::new(1).unwrap() , &salt, &[1,2,3], &mut key_bytes);
+        ProxyRequestCodec {
+            crypto_algorithm: &ring::aead::AES_256_GCM,
+            opening_key: ring::aead::OpeningKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
+            sealing_key: ring::aead::SealingKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
+            nonce_bytes: [1;12],
+            tag_len: ring::aead::AES_256_GCM.tag_len()
+        }
+    }
+}
+//pub struct ProxyRequestCodec;
 
 impl tokio::codec::Decoder for ProxyRequestCodec {
     type Item = ProxyRequest;
@@ -187,15 +247,28 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
             *src.get(19).unwrap()
         ];
         let transfer_len=BigEndian::read_u32(&transfer_len_bytes);
+        //println!("len:{}",transfer_len);
         let all_len=(21+transfer_len) as usize;
-        if src.len() < all_len {
+        if src.len() < all_len+self.tag_len {
             return Ok(None);
         }
-        let mut bytes = src.split_to(all_len);
+        let mut bytes = src.split_to(all_len+self.tag_len);
         let uuid_bytes= bytes.split_to(16);
-        let transfer_type_byte:u8 = *bytes.get(4).unwrap();
-        bytes.advance(5);
-        let data=bytes.freeze();
+        bytes.advance(4);
+        let mut key_bytes = [0; 32];
+        let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
+        let aad = ring::aead::Aad::from(uuid_bytes.as_ref());
+        let mut dec_place=bytes.as_mut();
+        let dec_bytes_result=ring::aead::open_in_place(&self.opening_key,nonce,aad,0,dec_place);
+        let dec_bytes=if let Ok(dec)=dec_bytes_result {
+            dec
+        }
+        else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"dec error"));
+        };
+        let transfer_type_byte = dec_bytes[0];
+        bytes.advance(1);
+        let data= bytes.split_to(transfer_len as usize).freeze();
         let (transfer_type,request) = match transfer_type_byte {
             0x0=>{
                 (ProxyTransferType::Data,ProxyTransfer::Data(data))
@@ -251,27 +324,47 @@ impl tokio::codec::Encoder for ProxyRequestCodec {
         if item.transfer_len > u32::MAX as usize {
             panic!();
         }
+        //let tag_len=ring::aead::AES_256_GCM.tag_len();
         BigEndian::write_u32(&mut len_buf, item.transfer_len as u32);
+        //println!("len:{}",item.transfer_len);
         let len = 16 + 4 + 1 + item.transfer_len;
-        dst.reserve(len);
+        let mut raw_dst=BytesMut::new();
+        raw_dst.reserve(len+self.tag_len-16-4);
+        dst.reserve(len+self.tag_len);
+        //dbg!(&uuid_bytes);
         dst.put(uuid_bytes.to_vec());
         dst.put(len_buf.to_vec());
-        dst.put(item.transfer_type as u8);
+        raw_dst.put(item.transfer_type as u8);
         match item.request {
             ProxyTransfer::Data(data) => {
-                dst.put(data);
+                raw_dst.put(data);
             }
             ProxyTransfer::RequestAddr(addr) => {
                 //dbg!(&addr);
-                dst.put(addr.as_bytes());
+                raw_dst.put(addr.as_bytes());
             }
             ProxyTransfer::Response(response) => {
-                dst.put_u8(response as u8);
+                raw_dst.put_u8(response as u8);
             },
             ProxyTransfer::Heartbeat(index)=> {
-                dst.put_u32_be(index);
+                raw_dst.put_u32_be(index);
             }
         }
+        //dbg!(&raw_dst);
+        for _ in 0..self.tag_len {
+            raw_dst.put(0u8);
+        }
+        let enc_place=raw_dst.as_mut();
+        let mut key_bytes = [0; 32];
+        let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
+        let aad = ring::aead::Aad::from(uuid_bytes);
+        let result=ring::aead::seal_in_place(&self.sealing_key,nonce,aad,enc_place,self.tag_len);
+        if result.is_err() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"enc error"));
+        }
+//        dbg!(&enc_place);
+        dst.put(raw_dst);
+//        dbg!(&dst);
         Ok(())
     }
 }
@@ -288,24 +381,40 @@ impl tokio::codec::Encoder for ProxyResponseCodec {
         }
         BigEndian::write_u32(&mut len_buf, item.transfer_len as u32);
         let len = 16 + 4 + 1 + item.transfer_len;
-        dst.reserve(len);
+        let mut raw_dst=BytesMut::new();
+        raw_dst.reserve(len+self.tag_len-16-4);
+        dst.reserve(len+self.tag_len);
         dst.put(uuid_bytes.to_vec());
         dst.put(len_buf.to_vec());
-        dst.put(item.transfer_type as u8);
+        raw_dst.put(item.transfer_type as u8);
         match item.response {
             ProxyTransfer::Data(data) => {
-                dst.put(data);
+                raw_dst.put(data);
             }
             ProxyTransfer::RequestAddr(addr) => {
-                dst.put(addr.as_bytes());
+                raw_dst.put(addr.as_bytes());
             }
             ProxyTransfer::Response(response) => {
-                dst.put_u8(response as u8);
+                raw_dst.put_u8(response as u8);
             },
             ProxyTransfer::Heartbeat(index) => {
-                dst.put_u32_be(index);
+                raw_dst.put_u32_be(index);
             }
         }
+        for _ in 0..self.tag_len {
+            raw_dst.put(0u8);
+        }
+        let enc_place=raw_dst.as_mut();
+        let mut key_bytes = [0; 32];
+        let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
+        let aad = ring::aead::Aad::from(uuid_bytes);
+        let result=ring::aead::seal_in_place(&self.sealing_key,nonce,aad,enc_place,self.tag_len);
+        if result.is_err() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"enc error"));
+        }
+//        dbg!(&enc_place);
+        dst.put(raw_dst);
+//        dbg!(&dst);
         Ok(())
     }
 }

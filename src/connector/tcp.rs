@@ -41,14 +41,14 @@ impl TcpConnector {
             actix::Arbiter::start(move |ctx:&mut actix::Context<ProxyClient>| {
                 let (r, w) = s.split();
                 let (tx,rx)=futures::sync::mpsc::unbounded();
-                let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec);
+                let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec::new());
                 let actions = rx.forward(framed_writer.sink_map_err(|e|{
                     dbg!(e);
                 })).map_err(|e|{
                     dbg!(e);
                 }).map(|_|());
                 tokio_current_thread::spawn(actions);
-                ctx.add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec));
+                ctx.add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec::new()));
                 ProxyClient {
                     write_sender:tx,
                     connections: HashMap::new(),

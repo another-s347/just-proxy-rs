@@ -201,8 +201,8 @@ fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String)
                 }
             }));
             let (r, w) = stream.split();
-            Server::add_stream(FramedRead::new(r, ActorMessage::ProxyResponseCodec), ctx);
-            let writer: FramedWrite<WriteHalf<_>, ActorMessage::ProxyRequestCodec> = FramedWrite::new(w, ActorMessage::ProxyRequestCodec, ctx);
+            Server::add_stream(FramedRead::new(r, ActorMessage::ProxyResponseCodec::new()), ctx);
+            let writer: FramedWrite<WriteHalf<_>, ActorMessage::ProxyRequestCodec> = FramedWrite::new(w, ActorMessage::ProxyRequestCodec::new(), ctx);
             let s=Server {
                 clients: HashMap::new(),
                 writer,
