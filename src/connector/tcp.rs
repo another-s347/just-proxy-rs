@@ -9,6 +9,7 @@ use crate::component::server::ProxyClient;
 use std::collections::HashMap;
 use crate::message as ActorMessage;
 use actix::prelude::*;
+use crate::opt;
 
 pub struct TcpConnector {}
 
@@ -27,7 +28,7 @@ impl ProxyConnector<TcpStream> for TcpConnector {
 }
 
 impl TcpConnector {
-    pub fn run_server(self, addr: &str, logger: slog::Logger) {
+    pub fn run_server(self, addr: &str, logger: slog::Logger, config:opt::Config) {
         let addr = net::SocketAddr::from_str(addr).unwrap();
         let listener = TcpListener::bind(&addr).unwrap();
         let t=listener.incoming().map_err(|e|{
@@ -37,18 +38,20 @@ impl TcpConnector {
                 Ok(addr)=>addr.to_string(),
                 Err(e)=>e.to_string()
             };
+            let crypto_config = config.crypto.clone();
+            let crypto_config_2=config.crypto.clone();
             let proxy_client_logger = logger.new(o!("client"=>remote_address));
             actix::Arbiter::start(move |ctx:&mut actix::Context<ProxyClient>| {
                 let (r, w) = s.split();
                 let (tx,rx)=futures::sync::mpsc::unbounded();
-                let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec::new());
+                let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec::new(crypto_config));
                 let actions = rx.forward(framed_writer.sink_map_err(|e|{
                     dbg!(e);
                 })).map_err(|e|{
                     dbg!(e);
                 }).map(|_|());
                 tokio_current_thread::spawn(actions);
-                ctx.add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec::new()));
+                ctx.add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec::new(crypto_config_2)));
                 ProxyClient {
                     write_sender:tx,
                     connections: HashMap::new(),

@@ -44,7 +44,8 @@ pub struct Server<W>
     hb:Instant,
     hb_index:u32,
     logger: Logger,
-    last_hb_instant:Instant
+    last_hb_instant:Instant,
+    crypto_config: opt::_CryptoConfig
 }
 
 /// Make actor from `Server`
@@ -187,9 +188,7 @@ impl<W> Handler<SocksConnectedMessage> for Server<W>
     }
 }
 
-
-
-fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String)->impl FnOnce(W)
+fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String,config:opt::Config)->impl FnOnce(W)
     where W:AsyncRead+AsyncWrite+'static
 {
     move|stream:W|{
@@ -201,15 +200,16 @@ fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:String)
                 }
             }));
             let (r, w) = stream.split();
-            Server::add_stream(FramedRead::new(r, ActorMessage::ProxyResponseCodec::new()), ctx);
-            let writer: FramedWrite<WriteHalf<_>, ActorMessage::ProxyRequestCodec> = FramedWrite::new(w, ActorMessage::ProxyRequestCodec::new(), ctx);
+            Server::add_stream(FramedRead::new(r, ActorMessage::ProxyResponseCodec::new(config.crypto.clone())), ctx);
+            let writer: FramedWrite<WriteHalf<_>, ActorMessage::ProxyRequestCodec> = FramedWrite::new(w, ActorMessage::ProxyRequestCodec::new(config.crypto.clone()), ctx);
             let s=Server {
                 clients: HashMap::new(),
                 writer,
                 hb_index:0,
                 hb:Instant::now(),
                 logger: log.new(o!("address"=>proxy_address_str)),
-                last_hb_instant:Instant::now()
+                last_hb_instant:Instant::now(),
+                crypto_config:config.crypto
             };
             s.hb(ctx);
             s
@@ -226,6 +226,31 @@ fn main() {
 
     let log = slog::Logger::root(drain, o!("version" => "0.5"));
 
+    let quic_config = opt::QuicConfig {
+        stream_window_bidi: None,
+        idle_timeout: None,
+        stream_receive_window: None,
+        receive_window: None,
+        max_tlps: None,
+        packet_threshold: None,
+        time_threshold: None,
+        delayed_ack_timeout: None,
+        initial_rtt: None,
+        max_datagram_size: None,
+        initial_window: None,
+        minimum_window: None,
+        loss_reduction_factor: None,
+        presistent_cognestion_threshold: None,
+        local_cid_len: None
+    };
+    let crypto_config= opt::CryptoConfig {
+        key: "12312".to_string(),
+        salt: "2121".to_string(),
+        crypto_method: "aes-256-gcm".to_string(),
+        digest_method: "sha256".to_string(),
+        digest_iteration: 1
+    };
+
     actix::System::run(move || {
         // Create server listener
         let addr = net::SocketAddr::from_str(&format!("{}:{}",opt.socks_host,opt.socks_port)).unwrap();
@@ -234,12 +259,18 @@ fn main() {
             "tcp"=>{
                 let connector = connector::tcp::TcpConnector{};
                 let proxy_address_str=format!("{}:{}",opt.proxy_host,opt.proxy_port);
-                connector.connect(&proxy_address_str.clone(), connect_callback(log,listener,proxy_address_str.clone()))
+                connector.connect(&proxy_address_str.clone(), connect_callback(log,listener,proxy_address_str.clone(),opt::Config{
+                    quic:quic_config,
+                    crypto:crypto_config.convert().unwrap()
+                }))
             }
             "quic"=>{
                 let connector = connector::quic::QuicClientConnector::new_dangerous();
                 let proxy_address_str=format!("{}:{}",opt.proxy_host,opt.proxy_port);
-                connector.connect(&proxy_address_str.clone(), connect_callback(log,listener,proxy_address_str.clone()))
+                connector.connect(&proxy_address_str.clone(), connect_callback(log,listener,proxy_address_str.clone(),opt::Config{
+                    quic:quic_config,
+                    crypto:crypto_config.convert().unwrap()
+                }))
             }
             _=>{
                 panic!("unsupported protocol")

@@ -18,6 +18,7 @@ use actix::io::FramedWrite;
 use tokio::sync::mpsc::error::UnboundedRecvError;
 use tokio::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
+use crate::opt;
 
 pub struct QuicClientConnector {
     pub endpoint: Endpoint,
@@ -122,7 +123,8 @@ impl QuicServerConnector {
 #[allow(dead_code)]
 struct QuicServerStreamAgent {
     remote_addr: SocketAddr,
-    logger:Logger
+    logger:Logger,
+    crypto_config:opt::_CryptoConfig
 }
 
 impl actix::Actor for QuicServerStreamAgent {
@@ -134,10 +136,11 @@ impl actix::StreamHandler<NewQuicStream,quinn::ConnectionError> for QuicServerSt
         let bistream = msg.0;
         let (r, w) = bistream.split();
         let proxy_client_logger = self.logger.clone();
+        let crypto_config = self.crypto_config.clone();
         ProxyClient::create(move |ctx:&mut Context<ProxyClient>| {
-            ProxyClient::add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec::new()), ctx);
+            ProxyClient::add_stream(FramedRead::new(r, ActorMessage::ProxyRequestCodec::new(crypto_config.clone())), ctx);
             let (tx,rx)=futures::sync::mpsc::unbounded();
-            let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec::new());
+            let framed_writer = tokio::codec::FramedWrite::new(w,ActorMessage::ProxyResponseCodec::new(crypto_config.clone()));
             let actions = rx.forward(framed_writer.sink_map_err(|e|{
                 dbg!(e);
             })).map_err(|e|{
@@ -159,20 +162,22 @@ impl actix::StreamHandler<NewQuicStream,quinn::ConnectionError> for QuicServerSt
 pub struct NewQuicStream(BiStream);
 
 impl QuicServerConnector {
-    pub fn run_server(self, addr: &str, logger: slog::Logger) {
-        let mut quic_config = quinn::Config::default();
-        quic_config.idle_timeout = 100;
+    pub fn run_server(self, addr: &str, logger: slog::Logger, config:opt::Config) {
+        let mut quic_config = config.quic.to_quinn_config();
         let mut endpoint = quinn::EndpointBuilder::new(quic_config);
         endpoint.logger(logger.new(o!("quic"=>addr.to_owned())));
         endpoint.listen(self.server_config);
+        let crypto_config = config.crypto;
         let (_, driver, incoming) = endpoint.bind(addr).unwrap();
         let s = incoming.for_each(move |conn:NewConnection| {
             let connection = conn.connection;
             let remote_addr=connection.remote_address();
             let incoming = conn.incoming;
             let client_logger = logger.new(o!("client"=>remote_addr.to_string()));
+            let crypto_config_2=crypto_config.clone();
             QuicServerStreamAgent::create(move|ctx:&mut Context<QuicServerStreamAgent>| {
-                let incoming_stream = incoming.map(|s|{
+                //let crypto_config = crypto_config.clone();
+                let incoming_stream = incoming.map(move|s|{
                     let bistream=match s {
                         quinn::NewStream::Bi(stream) => stream,
                         quinn::NewStream::Uni(_) => unreachable!("disabled by endpoint configuration"),
@@ -182,7 +187,8 @@ impl QuicServerConnector {
                 ctx.add_stream(incoming_stream);
                 QuicServerStreamAgent {
                     remote_addr,
-                    logger:client_logger
+                    logger:client_logger,
+                    crypto_config:crypto_config_2
                 }
             });
             Ok(())

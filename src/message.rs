@@ -11,6 +11,7 @@ use std::u32;
 use bytes::Bytes;
 use ring;
 use core::num::NonZeroU32;
+use crate::opt;
 
 #[derive(Message)]
 pub enum ConnectorResponse {
@@ -122,17 +123,15 @@ pub struct ProxyResponseCodec{
 }
 
 impl ProxyResponseCodec {
-    pub fn new() -> ProxyResponseCodec {
-        let password = b"password";
-        let salt = [1;3];
+    pub fn new(config:opt::_CryptoConfig) -> ProxyResponseCodec {
         let mut key_bytes=[0;32];
-        ring::pbkdf2::derive(&ring::digest::SHA256, NonZeroU32::new(1).unwrap() , &salt, &[1,2,3], &mut key_bytes);
+        ring::pbkdf2::derive(config.digest_method, config.digest_iteration , &config.salt, &config.key, &mut key_bytes);
         ProxyResponseCodec {
-            crypto_algorithm: &ring::aead::AES_256_GCM,
-            opening_key: ring::aead::OpeningKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
-            sealing_key: ring::aead::SealingKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
+            crypto_algorithm: config.crypto_method,
+            opening_key: ring::aead::OpeningKey::new(&config.crypto_method,&key_bytes).unwrap(),
+            sealing_key: ring::aead::SealingKey::new(&config.crypto_method,&key_bytes).unwrap(),
             nonce_bytes: [1;12],
-            tag_len: ring::aead::AES_256_GCM.tag_len()
+            tag_len: config.crypto_method.tag_len()
         }
     }
 }
@@ -216,17 +215,15 @@ pub struct ProxyRequestCodec{
 }
 
 impl ProxyRequestCodec {
-    pub fn new() -> ProxyRequestCodec {
-        let password = b"password";
-        let salt = [1;3];
+    pub fn new(config:opt::_CryptoConfig) -> ProxyRequestCodec {
         let mut key_bytes=[0;32];
-        ring::pbkdf2::derive(&ring::digest::SHA256, NonZeroU32::new(1).unwrap() , &salt, &[1,2,3], &mut key_bytes);
+        ring::pbkdf2::derive(config.digest_method, config.digest_iteration , &config.salt, &config.key, &mut key_bytes);
         ProxyRequestCodec {
-            crypto_algorithm: &ring::aead::AES_256_GCM,
-            opening_key: ring::aead::OpeningKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
-            sealing_key: ring::aead::SealingKey::new(&ring::aead::AES_256_GCM,&key_bytes).unwrap(),
+            crypto_algorithm: config.crypto_method,
+            opening_key: ring::aead::OpeningKey::new(&config.crypto_method,&key_bytes).unwrap(),
+            sealing_key: ring::aead::SealingKey::new(&config.crypto_method,&key_bytes).unwrap(),
             nonce_bytes: [1;12],
-            tag_len: ring::aead::AES_256_GCM.tag_len()
+            tag_len: config.crypto_method.tag_len()
         }
     }
 }
