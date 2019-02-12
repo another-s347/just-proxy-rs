@@ -103,6 +103,9 @@ impl<W> Handler<ActorMessage::ConnectorResponse> for SocksClient<W> where W:Asyn
                 self.recv_bytes+=data.len() as u64;
                 self.writer.write(SocksMessage::SocksResponse::Data(data))
             }
+            ActorMessage::ConnectorResponse::Abort =>{
+                _ctx.stop()
+            }
         }
     }
 }

@@ -18,6 +18,7 @@ pub enum ConnectorResponse {
     Succeeded,
     Failed,
     Data(Bytes),
+    Abort
 }
 
 pub enum ConnectionWriter {
@@ -104,6 +105,7 @@ pub enum ProxyResponseType {
     Succeeded = 0x0,
     ConnectionRefused = 0x1,
     Timeout = 0x2,
+    Abort = 0x3
 }
 
 #[derive(Message,Debug)]
@@ -152,7 +154,7 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
         ];
         let transfer_len=BigEndian::read_u32(&transfer_len_bytes);
         let all_len=(21+transfer_len) as usize;
-        if src.len() < all_len {
+        if src.len() < all_len+self.tag_len {
             return Ok(None);
         }
         let mut bytes = src.split_to(all_len+self.tag_len);
@@ -187,6 +189,7 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
                     0x0=>ProxyTransfer::Response(ProxyResponseType::Succeeded),
                     0x1=>ProxyTransfer::Response(ProxyResponseType::ConnectionRefused),
                     0x2=>ProxyTransfer::Response(ProxyResponseType::Timeout),
+                    0x3=>ProxyTransfer::Response(ProxyResponseType::Abort),
                     _=>panic!()
                 };
                 (ProxyTransferType::Response,r)
@@ -281,6 +284,7 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
                     0x0=>ProxyTransfer::Response(ProxyResponseType::Succeeded),
                     0x1=>ProxyTransfer::Response(ProxyResponseType::ConnectionRefused),
                     0x2=>ProxyTransfer::Response(ProxyResponseType::Timeout),
+                    0x3=>ProxyTransfer::Response(ProxyResponseType::Abort),
                     _=>panic!()
                 };
                 (ProxyTransferType::Response,r)

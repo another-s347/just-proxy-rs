@@ -133,6 +133,9 @@ impl<W> StreamHandler<message::ProxyResponse, io::Error> for Server<W> where W: 
                         ActorMessage::ProxyResponseType::Timeout => {
                             socks_client.do_send(ActorMessage::ConnectorResponse::Failed)
                         }
+                        ActorMessage::ProxyResponseType::Abort=>{
+                            socks_client.do_send(ActorMessage::ConnectorResponse::Abort)
+                        }
                     }
                 }
                 ActorMessage::ProxyTransfer::Heartbeat(_) => {

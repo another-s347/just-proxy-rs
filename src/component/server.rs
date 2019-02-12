@@ -11,7 +11,11 @@ use std::io;
 use bytes::Bytes;
 use futures::sync::mpsc::UnboundedSender;
 
-#[allow(dead_code)]
+#[derive(Message)]
+pub struct ConnectionDead {
+    uuid: uuid::Uuid
+}
+
 #[derive(Message)]
 pub struct ConnectionEstablished {
     uuid: uuid::Uuid,
@@ -46,6 +50,18 @@ impl Handler<ActorMessage::ProxyResponse> for ProxyClient
     fn handle(&mut self, msg: ActorMessage::ProxyResponse, _ctx: &mut Self::Context) -> Self::Result {
         self.write_sender.unbounded_send(msg).unwrap();
         //self.writer.write(msg)
+    }
+}
+
+impl Handler<ConnectionDead> for ProxyClient {
+    type Result = ();
+
+    fn handle(&mut self, msg: ConnectionDead, ctx: &mut Self::Context) -> Self::Result {
+        self.connections.remove(&msg.uuid);
+        self.write_sender.unbounded_send(ActorMessage::ProxyResponse::new(
+            msg.uuid,
+            ActorMessage::ProxyTransfer::Response(ActorMessage::ProxyResponseType::Abort),
+        )).unwrap();
     }
 }
 
@@ -84,14 +100,18 @@ impl StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient
                             info!(logger_clone, "connected addr:{}, cost:{} millis", addr, cost.as_millis());
                             let (r, w): (ReadHalf<_>, _) = tcpstream.split();
                             let framedreader=tokio::codec::FramedRead::new(r,ActorMessage::BytesCodec);
+                            let c2=client_addr.clone();
                             let reader_fut=framedreader.for_each(move|bytes| {
                                 client_addr.do_send(ActorMessage::ProxyResponse::new(
                                     uuid.clone(),
                                     ActorMessage::ProxyTransfer::Data(bytes),
                                 ));
                                 Ok(())
-                            }).map_err(|e|{
+                            }).map_err(move|e|{
                                 dbg!(e);
+                                c2.do_send(ConnectionDead {
+                                    uuid:uuid.clone()
+                                });
                             });
                             client_addr_cloned.do_send(ConnectionEstablished {
                                 uuid: uuid.clone(),
@@ -139,6 +159,7 @@ impl StreamHandler<ActorMessage::ProxyRequest, io::Error> for ProxyClient
                     let r=conn.write(data.as_ref());
                     if r.is_err() {
                         dbg!(r);
+                        self.connections.remove(&uuid);
                     }
                 } else {
                     panic!()
