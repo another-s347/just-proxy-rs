@@ -23,6 +23,7 @@ impl ProxyConnector<TcpStream> for TcpConnector {
             f(server_stream);
         }).map_err(|err| {
             dbg!(err);
+            System::current().stop();
         }))
     }
 }

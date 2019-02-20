@@ -64,6 +64,7 @@ impl ProxyConnector<BiStream> for QuicClientConnector {
         let connect_future = self.endpoint.connect(&remote, "www.baidu.com").unwrap()
             .map_err(|e| {
                 dbg!(e);
+                System::current().stop();
             })
             .and_then(move |conn| {
                 let conn = conn.connection;
@@ -74,7 +75,10 @@ impl ProxyConnector<BiStream> for QuicClientConnector {
                     Ok(())
                 })
             });
-        let f = connect_future.join(self.driver.map_err(|e| eprintln!("IO error: {}", e))).map(|_| ());
+        let f = connect_future.join(self.driver.map_err(|e| {
+            eprintln!("IO error: {}", e);
+            System::current().stop();
+        })).map(|_| ());
         Box::new(f)
     }
 }

@@ -26,6 +26,14 @@ fn main(){
         run_server(opt.to_server_config(),log)
     }
     else {
-        run_client(opt.to_client_config(),log)
+        if opt.retry {
+            loop {
+                run_client(opt.to_client_config(),log.clone());
+                std::thread::sleep(std::time::Duration::from_secs(opt.retry_interval))
+            }
+        }
+        else {
+            run_client(opt.to_client_config(),log.clone());
+        }
     }
 }

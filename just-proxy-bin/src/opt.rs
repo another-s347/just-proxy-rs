@@ -33,7 +33,13 @@ pub struct BinOpt {
     pub config_path:String,
 
     #[structopt(long="dump-config")]
-    pub dump_config:bool
+    pub dump_config:bool,
+
+    #[structopt(short="r", long="retry")]
+    pub retry:bool,
+
+    #[structopt(long="retry-interval", default_value="5")]
+    pub retry_interval:u64,
 }
 
 impl BinOpt {
