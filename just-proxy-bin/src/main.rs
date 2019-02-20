@@ -9,6 +9,8 @@ mod opt;
 use slog::*;
 use just_proxy_lib::{opt as lib_opt,connector,run_server,run_client};
 use structopt::StructOpt;
+use std::fs::File;
+use daemonize::Daemonize;
 
 fn main(){
     let opt:opt::BinOpt = opt::BinOpt::from_args();
@@ -22,6 +24,33 @@ fn main(){
         return;
     }
 
+    if opt.daemon {
+        let name = if opt.server {
+            "/tmp/justproxy-server"
+        } else {
+            "/tmp/justproxy-client"
+        };
+        let stdout = File::create(format!("{}.out",name)).unwrap();
+        let stderr = File::create(format!("{}.err",name)).unwrap();
+
+        let daemonize = Daemonize::new()
+            .pid_file(format!("{}.pid",name)) // Every method except `new` and `start`
+            .stdout(stdout)  // Redirect stdout to `/tmp/daemon.out`.
+            .stderr(stderr);  // Redirect stderr to `/tmp/daemon.err`.
+
+        match daemonize.start() {
+            Ok(_) => {
+                run(opt,log)
+            },
+            Err(e) => eprintln!("Error, {}", e),
+        }
+    }
+    else{
+        run(opt,log)
+    }
+}
+
+fn run(opt:opt::BinOpt,log:Logger){
     if opt.server {
         run_server(opt.to_server_config(),log)
     }

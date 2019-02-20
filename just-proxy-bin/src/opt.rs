@@ -40,6 +40,9 @@ pub struct BinOpt {
 
     #[structopt(long="retry-interval", default_value="5")]
     pub retry_interval:u64,
+
+    #[structopt(short="d", long="daemon")]
+    pub daemon:bool,
 }
 
 impl BinOpt {
