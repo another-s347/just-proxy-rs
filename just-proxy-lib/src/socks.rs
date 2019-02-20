@@ -7,7 +7,7 @@ use std::io;
 use packet_toolbox_rs::socks5::{message as SocksMessage, codec};
 use super::message as ActorMessage;
 use uuid;
-use crate::Server;
+use crate::component::client::Server;
 use slog::*;
 use std::time::{Instant,Duration};
 
