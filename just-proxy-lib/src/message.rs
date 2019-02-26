@@ -12,6 +12,8 @@ use bytes::Bytes;
 use ring;
 use core::num::NonZeroU32;
 use crate::opt;
+use ring::io::der::Tag::BitString;
+use ring::rand::SecureRandom;
 
 #[derive(Message)]
 pub enum ConnectorResponse {
@@ -41,7 +43,7 @@ impl tokio::codec::Decoder for BytesCodec {
 
 #[derive(Message)]
 pub struct ProxyRequest {
-    pub uuid: Uuid,
+    pub uuid: u16,
     // 16
     transfer_len: usize,
     // 4
@@ -51,7 +53,7 @@ pub struct ProxyRequest {
 }
 
 impl ProxyRequest {
-    pub fn new(uuid: Uuid, request: ProxyTransfer) -> ProxyRequest { // split to two
+    pub fn new(uuid: u16, request: ProxyTransfer) -> ProxyRequest { // split to two
         let (len, t_type) = match &request {
             ProxyTransfer::Response(_) => (1usize, ProxyTransferType::Response),
             ProxyTransfer::RequestAddr(ref a) => (a.as_bytes().len(), ProxyTransferType::RequestAddr),
@@ -68,7 +70,7 @@ impl ProxyRequest {
 }
 
 impl ProxyResponse {
-    pub fn new(uuid: Uuid, response: ProxyTransfer) -> ProxyResponse { // split to two
+    pub fn new(uuid: u16, response: ProxyTransfer) -> ProxyResponse { // split to two
         let (len, t_type) = match &response {
             ProxyTransfer::Response(_) => (1usize, ProxyTransferType::Response),
             ProxyTransfer::RequestAddr(ref a) => (a.as_bytes().len(), ProxyTransferType::RequestAddr),
@@ -110,7 +112,7 @@ pub enum ProxyResponseType {
 
 #[derive(Message,Debug)]
 pub struct ProxyResponse {
-    pub uuid: Uuid,
+    pub uuid: u16,
     transfer_len: usize,
     transfer_type: ProxyTransferType,
     pub response: ProxyTransfer,
@@ -143,22 +145,23 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.len() < 21 {
+        if src.len() < 11 {
             return Ok(None);
         }
         let transfer_len_bytes: [u8;4] = [
-            *src.get(16).unwrap(),
-            *src.get(17).unwrap(),
-            *src.get(18).unwrap(),
-            *src.get(19).unwrap()
+            *src.get(6).unwrap(),
+            *src.get(7).unwrap(),
+            *src.get(8).unwrap(),
+            *src.get(9).unwrap()
         ];
         let transfer_len=BigEndian::read_u32(&transfer_len_bytes);
-        let all_len=(21+transfer_len) as usize;
+        let all_len=(11+transfer_len) as usize;
         if src.len() < all_len+self.tag_len {
             return Ok(None);
         }
         let mut bytes = src.split_to(all_len+self.tag_len);
-        let uuid_bytes= bytes.split_to(16);
+        let uuid_bytes= bytes.split_to(6);
+        let port = read_first_u16_be(&uuid_bytes);
         bytes.advance(4);
         let mut key_bytes = [0; 32];
         let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
@@ -169,6 +172,7 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
             dec
         }
         else {
+            print!("err1");
             return Err(io::Error::new(io::ErrorKind::InvalidInput,"dec error"));
         };
         let transfer_type_byte = dec_bytes[0];
@@ -201,7 +205,7 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
             _=>panic!()
         };
         Ok(Some(ProxyResponse{
-            uuid: uuid::Uuid::from_bytes(bytesmut_to_u8_16(uuid_bytes)),
+            uuid: port,
             transfer_len:transfer_len as usize,
             transfer_type,
             response
@@ -237,23 +241,24 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.len() < 21 {
+        if src.len() < 11 {
             return Ok(None);
         }
         let transfer_len_bytes: [u8;4] = [
-            *src.get(16).unwrap(),
-            *src.get(17).unwrap(),
-            *src.get(18).unwrap(),
-            *src.get(19).unwrap()
+            *src.get(6).unwrap(),
+            *src.get(7).unwrap(),
+            *src.get(8).unwrap(),
+            *src.get(9).unwrap()
         ];
         let transfer_len=BigEndian::read_u32(&transfer_len_bytes);
         //println!("len:{}",transfer_len);
-        let all_len=(21+transfer_len) as usize;
+        let all_len=(11+transfer_len) as usize;
         if src.len() < all_len+self.tag_len {
             return Ok(None);
         }
         let mut bytes = src.split_to(all_len+self.tag_len);
-        let uuid_bytes= bytes.split_to(16);
+        let uuid_bytes= bytes.split_to(6);
+        let port=read_first_u16_be(&uuid_bytes);
         bytes.advance(4);
         let mut key_bytes = [0; 32];
         let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
@@ -264,6 +269,7 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
             dec
         }
         else {
+            print!("err1");
             return Err(io::Error::new(io::ErrorKind::InvalidInput,"dec error"));
         };
         let transfer_type_byte = dec_bytes[0];
@@ -296,7 +302,7 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
             _=>panic!()
         };
         Ok(Some(ProxyRequest{
-            uuid: uuid::Uuid::from_bytes(bytesmut_to_u8_16(uuid_bytes)),
+            uuid: port,
             transfer_len:transfer_len as usize,
             transfer_type,
             request
@@ -315,25 +321,42 @@ fn bytesmut_to_u8_16(src:BytesMut)->[u8;16]{
     r
 }
 
+fn read_first_u16_be(src:&BytesMut)->u16{
+    if src.len()<2 {
+        panic!()
+    }
+    let mut r=vec![0u8;2];
+    for i in 0..2 {
+        r[i]=*src.get(i).unwrap();
+    }
+    BigEndian::read_u16(&r)
+}
+
 impl tokio::codec::Encoder for ProxyRequestCodec {
     type Item = ProxyRequest;
     type Error = io::Error;
 
     fn encode(&mut self, item: ProxyRequest, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let uuid_bytes = item.uuid.as_bytes();
+        let mut uuid_bytes = vec![0u8;2];
+        BigEndian::write_u16(&mut uuid_bytes,item.uuid);
         let mut len_buf: [u8;4] = [0;4];
+        let mut random = vec![0u8;4];
+        let generator = ring::rand::SystemRandom::new();
+        generator.fill(&mut random).unwrap();
+        uuid_bytes.append(&mut random);
         if item.transfer_len > u32::MAX as usize {
             panic!();
         }
         //let tag_len=ring::aead::AES_256_GCM.tag_len();
         BigEndian::write_u32(&mut len_buf, item.transfer_len as u32);
         //println!("len:{}",item.transfer_len);
-        let len = 16 + 4 + 1 + item.transfer_len;
+        let len = 6 + 4 + 1 + item.transfer_len;
         let mut raw_dst=BytesMut::new();
-        raw_dst.reserve(len+self.tag_len-16-4);
+        raw_dst.reserve(len+self.tag_len-(6)-4);
         dst.reserve(len+self.tag_len);
         //dbg!(&uuid_bytes);
         dst.put(uuid_bytes.to_vec());
+        //dst.put(random);
         dst.put(len_buf.to_vec());
         raw_dst.put(item.transfer_type as u8);
         match item.request {
@@ -358,12 +381,13 @@ impl tokio::codec::Encoder for ProxyRequestCodec {
         let enc_place=raw_dst.as_mut();
         let mut key_bytes = [0; 32];
         let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
-        let aad = ring::aead::Aad::from(uuid_bytes);
+        let aad = ring::aead::Aad::from(&uuid_bytes);
         let result=ring::aead::seal_in_place(&self.sealing_key,nonce,aad,enc_place,self.tag_len);
         if result.is_err() {
+            print!("err2");
             return Err(io::Error::new(io::ErrorKind::InvalidInput,"enc error"));
         }
-//        dbg!(&enc_place);
+        //dbg!(&enc_place);
         dst.put(raw_dst);
 //        dbg!(&dst);
         Ok(())
@@ -375,15 +399,20 @@ impl tokio::codec::Encoder for ProxyResponseCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let uuid_bytes = item.uuid.as_bytes();
+        let mut uuid_bytes = vec![0u8;2];
+        BigEndian::write_u16(&mut uuid_bytes,item.uuid);
+        let mut random = vec![0u8;4];
+        let generator = ring::rand::SystemRandom::new();
+        generator.fill(&mut random).unwrap();
+        uuid_bytes.append(&mut random);
         let mut len_buf: [u8;4] = [0;4];
         if item.transfer_len > u32::MAX as usize {
             panic!();
         }
         BigEndian::write_u32(&mut len_buf, item.transfer_len as u32);
-        let len = 16 + 4 + 1 + item.transfer_len;
+        let len = 6 + 4 + 1 + item.transfer_len;
         let mut raw_dst=BytesMut::new();
-        raw_dst.reserve(len+self.tag_len-16-4);
+        raw_dst.reserve(len+self.tag_len-(6)-4);
         dst.reserve(len+self.tag_len);
         dst.put(uuid_bytes.to_vec());
         dst.put(len_buf.to_vec());
@@ -408,9 +437,10 @@ impl tokio::codec::Encoder for ProxyResponseCodec {
         let enc_place=raw_dst.as_mut();
         let mut key_bytes = [0; 32];
         let nonce=ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
-        let aad = ring::aead::Aad::from(uuid_bytes);
+        let aad = ring::aead::Aad::from(&uuid_bytes);
         let result=ring::aead::seal_in_place(&self.sealing_key,nonce,aad,enc_place,self.tag_len);
         if result.is_err() {
+            print!("err2");
             return Err(io::Error::new(io::ErrorKind::InvalidInput,"enc error"));
         }
 //        dbg!(&enc_place);

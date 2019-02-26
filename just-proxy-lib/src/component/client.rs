@@ -26,7 +26,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 pub struct Server<W>
     where W: AsyncWrite + 'static
 {
-    clients: HashMap<uuid::Uuid, Addr<SocksClient<W>>>,
+    clients: HashMap<u16, Addr<SocksClient<W>>>,
     writer: FramedWrite<WriteHalf<W>, ActorMessage::ProxyRequestCodec>,
     hb:Instant,
     hb_index:u32,
@@ -88,7 +88,7 @@ impl<W> StreamHandler<ActorMessage::ProxyResponse, io::Error> for Server<W> wher
     fn handle(&mut self, item: ActorMessage::ProxyResponse, _ctx: &mut Self::Context) {
         let uuid = item.uuid;
         let response = item.response;
-        if uuid.is_nil() {
+        if uuid == 0 {
             match response {
                 ActorMessage::ProxyTransfer::Heartbeat(i) => {
                     let hb_rtt=Instant::now().duration_since(self.last_hb_instant).as_millis();
@@ -146,7 +146,7 @@ impl<W> Handler<Heartbeat> for Server<W> where W:AsyncWrite+'static {
         self.hb_index+=1;
         info!(self.logger,"send heartbeat {}",self.hb_index);
         self.writer.write(ActorMessage::ProxyRequest::new(
-            uuid::Uuid::nil(),
+            0,
             ActorMessage::ProxyTransfer::Heartbeat(self.hb_index)
         ))
     }
@@ -164,7 +164,7 @@ impl<W> Handler<SocksConnectedMessage> for Server<W>
 
     fn handle(&mut self, msg: SocksConnectedMessage, ctx: &mut Context<Self>) {
         let (r, w) = msg.connector.split();
-        let uuid = uuid::Uuid::new_v4();
+        let uuid = msg.port;
         let uuid_key = uuid.clone();
         let server_addr = ctx.address();
         let logger=self.logger.clone();
@@ -185,8 +185,10 @@ pub fn connect_callback<W>(log:Logger,listener:TcpListener,proxy_address_str:Str
         info!(log,"Connected to proxy server";"address"=>proxy_address_str.clone());
         Server::create(move |ctx| {
             ctx.add_message_stream(listener.incoming().map_err(|_| ()).map(|st| {
+                let port=st.peer_addr().unwrap().port();
                 SocksConnectedMessage {
-                    connector: st
+                    connector: st,
+                    port
                 }
             }));
             let (r, w) = stream.split();

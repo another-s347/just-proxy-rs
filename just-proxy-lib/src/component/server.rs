@@ -13,12 +13,12 @@ use futures::sync::mpsc::UnboundedSender;
 
 #[derive(Message)]
 pub struct ConnectionDead {
-    uuid: uuid::Uuid
+    uuid: u16
 }
 
 #[derive(Message)]
 pub struct ConnectionEstablished {
-    uuid: uuid::Uuid,
+    uuid: u16,
     writer: WriteHalf<TcpStream>
 }
 
@@ -29,7 +29,7 @@ pub struct ProxyClient
 {
     pub write_sender:UnboundedSender<ActorMessage::ProxyResponse>,
     //pub writer: Option<FramedWrite<WriteHalf<W>, ActorMessage::ProxyResponseCodec>>,
-    pub connections: HashMap<uuid::Uuid, WriteHalf<TcpStream>>,
+    pub connections: HashMap<u16, WriteHalf<TcpStream>>,
     pub logger: slog::Logger,
     pub resolver: Addr<resolver::Resolver>,
 }

@@ -13,13 +13,14 @@ use std::time::{Instant,Duration};
 
 #[derive(Message)]
 pub struct SocksConnectedMessage {
-    pub connector:TcpStream
+    pub connector:TcpStream,
+    pub port:u16
 }
 
 pub struct SocksClient<W>
 where W:AsyncWrite+'static
 {
-    pub uuid: uuid::Uuid,
+    pub uuid: u16,
     pub writer: FramedWrite<WriteHalf<TcpStream>, codec::Socks5ResponseCodec>,
     //peer_stream: Option<Writer<WriteHalf<TcpStream>, io::Error>>,
     pub server_addr: Addr<Server<W>>,
@@ -32,7 +33,7 @@ where W:AsyncWrite+'static
 }
 
 impl<W> SocksClient<W> where W:AsyncWrite+'static {
-    pub fn new(uuid:uuid::Uuid,writer:FramedWrite<WriteHalf<TcpStream>, codec::Socks5ResponseCodec>,server_addr:Addr<Server<W>>,logger:Logger)->SocksClient<W> {
+    pub fn new(uuid:u16,writer:FramedWrite<WriteHalf<TcpStream>, codec::Socks5ResponseCodec>,server_addr:Addr<Server<W>>,logger:Logger)->SocksClient<W> {
         SocksClient {
             uuid,
             writer,
