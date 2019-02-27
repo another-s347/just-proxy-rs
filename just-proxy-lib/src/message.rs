@@ -150,8 +150,9 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
         }
         let nonce_1 = ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
         let zero_aad = ring::aead::Aad::from(&[]);
-        let mut parse1_dec_place = src.to_vec();
-        let parse1_dec_bytes_result = ring::aead::open_in_place(&self.opening_key, nonce_1, zero_aad, 0, &mut parse1_dec_place[0..11+self.tag_len]);
+        let mut parse1_dec_place=vec![0u8;11+self.tag_len];
+        src.chunks(11+self.tag_len).next().unwrap().clone_into(&mut parse1_dec_place);
+        let parse1_dec_bytes_result = ring::aead::open_in_place(&self.opening_key, nonce_1, zero_aad, 0, &mut parse1_dec_place);
         let parse1_dec_bytes = if let Ok(dec) = parse1_dec_bytes_result {
             dec
         } else {
@@ -166,7 +167,7 @@ impl tokio::codec::Decoder for ProxyResponseCodec {
         let transfer_len=BigEndian::read_u32(&transfer_len_bytes);
         let transfer_type_byte:u8 = parse1_dec_bytes.get(10).unwrap().clone();
         //let uuid_bytes = u8_to_u8_2(&parse1_dec_place);
-        let uuid = BigEndian::read_u16(&parse1_dec_place);
+        let uuid = BigEndian::read_u16(&parse1_dec_bytes);
 
         // parse 2 decode
         if src.len() < 6 + 4 + 1 + self.tag_len + transfer_len as usize + self.tag_len {
@@ -253,8 +254,9 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
         }
         let nonce_1 = ring::aead::Nonce::try_assume_unique_for_key(&self.nonce_bytes).unwrap();
         let zero_aad = ring::aead::Aad::from(&[]);
-        let mut parse1_dec_place = src.to_vec();
-        let parse1_dec_bytes_result = ring::aead::open_in_place(&self.opening_key, nonce_1, zero_aad, 0, &mut parse1_dec_place[0..11+self.tag_len]);
+        let mut parse1_dec_place=vec![0u8;11+self.tag_len];
+        src.chunks(11+self.tag_len).next().unwrap().clone_into(&mut parse1_dec_place);
+        let parse1_dec_bytes_result = ring::aead::open_in_place(&self.opening_key, nonce_1, zero_aad, 0, &mut parse1_dec_place);
         let parse1_dec_bytes = if let Ok(dec) = parse1_dec_bytes_result {
             dec
         } else {
@@ -269,7 +271,7 @@ impl tokio::codec::Decoder for ProxyRequestCodec {
         let transfer_len=BigEndian::read_u32(&transfer_len_bytes);
         let transfer_type_byte:u8 = parse1_dec_bytes.get(10).unwrap().clone();
         //let uuid_bytes = u8_to_u8_2(&parse1_dec_place);
-        let uuid = BigEndian::read_u16(&parse1_dec_place);
+        let uuid = BigEndian::read_u16(&parse1_dec_bytes);
 
         // parse 2 decode
         if src.len() < 6 + 4 + 1 + self.tag_len + transfer_len as usize + self.tag_len {
