@@ -7,7 +7,7 @@ use actix::io::{FramedWrite};
 use tokio::codec::FramedRead;
 use tokio::net::{TcpListener};
 use std::io;
-use packet_toolbox_rs::socks5::codec;
+use crate::socks::codec;
 use crate::message as ActorMessage;
 use uuid;
 use crate::connector;

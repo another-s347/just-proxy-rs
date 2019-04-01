@@ -1,10 +1,14 @@
+mod message;
+pub mod codec;
+
 use tokio::prelude::*;
 use tokio::io::WriteHalf;
 use actix::prelude::*;
 use actix::io::{FramedWrite};
 use tokio::net::{TcpStream};
 use std::io;
-use packet_toolbox_rs::socks5::{message as SocksMessage, codec};
+//use packet_toolbox_rs::socks5::{message as SocksMessage, codec};
+use message as SocksMessage;
 use super::message as ActorMessage;
 use uuid;
 use crate::component::client::Server;
