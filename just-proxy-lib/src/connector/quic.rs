@@ -1,13 +1,14 @@
-use quinn::{Endpoint, Driver, BiStream, ServerConfig};
+use quinn::{Endpoint, ServerConfig, EndpointDriver, SendStream, RecvStream};
+use quinn::ClientConfig as QuicClientConfig;
 use super::{ProxyConnector, ProxyListener};
 use futures::prelude::*;
-use rustls::ProtocolVersion;
+use rustls::{ProtocolVersion, ClientConfig};
 use std::{fs, io};
 use std::str::FromStr;
 use crate::ext::OnlyFirstStream;
 use actix::prelude::*;
 use std::net::SocketAddr;
-use quinn::NewConnection;
+use quinn::Connection;
 use crate::component::server::*;
 use tokio::codec::FramedRead;
 use std::collections::HashMap;
@@ -19,10 +20,11 @@ use tokio::sync::mpsc::error::UnboundedRecvError;
 use tokio::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 use crate::opt;
+use std::sync::Arc;
 
 pub struct QuicClientConnector {
     pub endpoint: Endpoint,
-    pub driver: Driver,
+    pub driver: EndpointDriver,
 }
 
 pub struct NoCertificateVerification {}
@@ -40,17 +42,17 @@ impl rustls::ServerCertVerifier for NoCertificateVerification {
 impl QuicClientConnector {
     pub fn new_dangerous() -> QuicClientConnector {
         let mut endpoint = quinn::Endpoint::new();
-        let mut client_config = quinn::ClientConfigBuilder::new();
-        client_config.set_protocols(&[quinn::ALPN_QUIC_HTTP]);
+        let mut client_config = quinn::ClientConfigBuilder::new(QuicClientConfig::default());
+        client_config.protocols(&[quinn::ALPN_QUIC_HTTP]);
         //endpoint.logger(log.clone());
         client_config.enable_keylog();
         let mut cfg = client_config.build();
         let mut tls_cfg = rustls::ClientConfig::new();
         tls_cfg.dangerous().set_certificate_verifier(std::sync::Arc::new(NoCertificateVerification {}));
         tls_cfg.versions = vec![ProtocolVersion::TLSv1_3];
-        cfg.tls_config = std::sync::Arc::new(tls_cfg);
+//        cfg.tls_config = std::sync::Arc::new(tls_cfg);
         endpoint.default_client_config(cfg);
-        let (endpoint, driver, _) = endpoint.bind("0.0.0.0:12311").unwrap();
+        let (driver, endpoint, _) = endpoint.bind("0.0.0.0:12311").unwrap();
         QuicClientConnector {
             endpoint,
             driver,
@@ -58,16 +60,16 @@ impl QuicClientConnector {
     }
 }
 
-impl ProxyConnector<BiStream> for QuicClientConnector {
-    fn connect<F>(self, addr: &str, f: F) -> Box<Future<Item=(), Error=()>> where F: FnOnce(BiStream) + 'static {
+impl ProxyConnector<(SendStream, RecvStream)> for QuicClientConnector {
+    fn connect<F>(self, addr: &str, f: F) -> Box<Future<Item=(), Error=()>> where F: FnOnce((SendStream, RecvStream)) + 'static {
         let remote = std::net::SocketAddr::from_str(addr).unwrap();
         let connect_future = self.endpoint.connect(&remote, "www.baidu.com").unwrap()
             .map_err(|e| {
                 dbg!(e);
                 System::current().stop();
             })
-            .and_then(move |conn| {
-                let conn = conn.connection;
+            .and_then(move |(driver,connection,incomingstream)| {
+                let conn = connection;
                 conn.open_bi().map_err(|e| {
                     dbg!(e);
                 }).and_then(move |stream| {
@@ -93,7 +95,7 @@ impl QuicServerConnector {
             ..Default::default()
         };
         let mut server_config = quinn::ServerConfigBuilder::new(server_config);
-        server_config.set_protocols(&[quinn::ALPN_QUIC_HTTP]);
+        server_config.protocols(&[quinn::ALPN_QUIC_HTTP]);
         let dirs = directories::ProjectDirs::from("org", "quinn", "quinn-examples").unwrap();
         let path = dirs.data_local_dir();
         let cert_path = path.join("cert.der");
@@ -117,7 +119,7 @@ impl QuicServerConnector {
         };
         let key = quinn::PrivateKey::from_der(&key).unwrap();
         let cert = quinn::Certificate::from_der(&cert).unwrap();
-        server_config.set_certificate(quinn::CertificateChain::from_certs(vec![cert]), key).unwrap();
+        server_config.certificate(quinn::CertificateChain::from_certs(vec![cert]), key).unwrap();
         QuicServerConnector {
             server_config: server_config.build()
         }
@@ -163,30 +165,37 @@ impl actix::StreamHandler<NewQuicStream,quinn::ConnectionError> for QuicServerSt
 }
 
 #[derive(Message)]
-pub struct NewQuicStream(BiStream);
+pub struct NewQuicStream(SendStream, RecvStream);
 
 impl QuicServerConnector {
     pub fn run_server(self, addr: &str, logger: slog::Logger, config:opt::Config) {
-        let mut quic_config = config.quic.to_quinn_config();
-        let mut endpoint = quinn::EndpointBuilder::new(quic_config);
+        let server_config = quinn::ServerConfig {
+            transport: Arc::new(quinn::TransportConfig {
+                stream_window_uni: 0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut server_config = quinn::ServerConfigBuilder::new(server_config);
+        server_config.protocols(&[quinn::ALPN_QUIC_HTTP]);
+        let mut endpoint = quinn::Endpoint::new();
         endpoint.logger(logger.new(o!("quic"=>addr.to_owned())));
-        endpoint.listen(self.server_config);
-        let crypto_config = config.crypto;
-        let (_, driver, incoming) = endpoint.bind(addr).unwrap();
-        let s = incoming.for_each(move |conn:NewConnection| {
-            let connection = conn.connection;
+        endpoint.listen(server_config.build());
+        let (driver, endpoint, incoming) = endpoint.bind(addr).unwrap();
+        let s = incoming.for_each(move |(connectionDriver,connection,incomingStreams)| {
+            let connection = connection;
             let remote_addr=connection.remote_address();
-            let incoming = conn.incoming;
+            let incoming = incomingStreams;
             let client_logger = logger.new(o!("client"=>remote_addr.to_string()));
             let crypto_config_2=crypto_config.clone();
             QuicServerStreamAgent::create(move|ctx:&mut Context<QuicServerStreamAgent>| {
                 //let crypto_config = crypto_config.clone();
                 let incoming_stream = incoming.map(move|s|{
-                    let bistream=match s {
-                        quinn::NewStream::Bi(stream) => stream,
+                    let (send,recv)=match s {
+                        quinn::NewStream::Bi(stream,recvStream) => (stream,recvStream),
                         quinn::NewStream::Uni(_) => unreachable!("disabled by endpoint configuration"),
                     };
-                    NewQuicStream(bistream)
+                    NewQuicStream(send,recv)
                 });
                 ctx.add_stream(incoming_stream);
                 QuicServerStreamAgent {
@@ -204,16 +213,16 @@ impl QuicServerConnector {
     }
 }
 
-impl ProxyListener<BiStream> for QuicServerConnector {
-    fn listen<F>(self, addr: &str, f: F) where F: FnOnce(Box<dyn Stream<Item=BiStream, Error=()>>) + 'static {
-        let mut quic_config = quinn::Config::default();
-        quic_config.idle_timeout = 100;
-        let mut endpoint = quinn::EndpointBuilder::new(quic_config);
+impl ProxyListener<(SendStream, RecvStream)> for QuicServerConnector {
+    fn listen<F>(self, addr: &str, f: F) where F: FnOnce(Box<dyn Stream<Item=(SendStream, RecvStream), Error=()>>) + 'static {
+//        let mut quic_config = EndpointConfig::default();
+//        quic_config.idle_timeout = 100;
+        let mut endpoint = quinn::EndpointBuilder::default();
         //endpoint.logger(log.clone());
         endpoint.listen(self.server_config);
-        let (_, driver, incoming) = endpoint.bind(addr).unwrap();
-        let s = incoming.map(move |conn| {
-            let t = conn.incoming.map_err(|e| {
+        let (driver, endpoint, incoming) = endpoint.bind(addr).unwrap();
+        let s = incoming.map(move |(connectionDriver,connection,incomingStreams)| {
+            let t = incomingStreams.map_err(|e| {
                 dbg!(e);
             });
             OnlyFirstStream {
@@ -223,7 +232,7 @@ impl ProxyListener<BiStream> for QuicServerConnector {
         });
         let s2 = s.flatten().map(|newstream| {
             let stream = match newstream {
-                quinn::NewStream::Bi(stream) => stream,
+                quinn::NewStream::Bi(stream,recvStream) => stream,
                 quinn::NewStream::Uni(_) => unreachable!("disabled by endpoint configuration"),
             };
             //ArcStream::new(stream)

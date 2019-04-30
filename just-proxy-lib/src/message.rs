@@ -1,5 +1,3 @@
-#![feature(nonzero)]
-
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use std::io;
@@ -20,10 +18,6 @@ pub enum ConnectorResponse {
     Failed,
     Data(Bytes),
     Abort,
-}
-
-pub enum ConnectionWriter {
-    Tcp(TcpStream)
 }
 
 pub struct BytesCodec;

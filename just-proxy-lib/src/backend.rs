@@ -9,7 +9,8 @@ use actix::actors::resolver;
 use crate::message as ActorMessage;
 use std::io;
 use bytes::Bytes;
-use futures::sync::mpsc::UnboundedSender;
+use futures::sync::mpsc::{UnboundedSender, unbounded, UnboundedReceiver};
+use crate::message::ProxyResponse;
 
 #[derive(Message)]
 pub struct ConnectionDead {
@@ -32,6 +33,18 @@ pub struct ProxyClient
     pub connections: HashMap<u16, WriteHalf<TcpStream>>,
     pub logger: slog::Logger,
     pub resolver: Addr<resolver::Resolver>,
+}
+
+impl ProxyClient {
+    pub fn new(logger:slog::Logger) -> (ProxyClient, UnboundedReceiver<ActorMessage::ProxyResponse>) {
+        let (sender,b)=unbounded();
+        (ProxyClient {
+            write_sender: sender,
+            connections: HashMap::new(),
+            logger,
+            resolver: actix::actors::resolver::Resolver::from_registry()
+        },b)
+    }
 }
 
 impl Actor for ProxyClient
