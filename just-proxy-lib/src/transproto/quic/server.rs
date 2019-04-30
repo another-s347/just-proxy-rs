@@ -2,7 +2,6 @@ use crate::opt;
 use std::sync::Arc;
 use tokio::prelude::*;
 use actix::prelude::*;
-use crate::backend::ProxyClient;
 use quinn::{ConnectionDriver, Connection, IncomingStreams, ServerConfigBuilder};
 use slog::Drain;
 use std::net::SocketAddr;
@@ -10,10 +9,11 @@ use std::any::Any;
 use crate::message as ActorMessage;
 use crate::opt::CryptoConfig;
 use std::{fs, io};
-use tokio::codec::FramedRead;
-use crate::async_backend::{AsyncProxyClient, read_stream};
+use tokio::codec::{FramedRead, FramedWrite};
+use crate::async_backend::{AsyncProxyClient, process_heartbeat};
+use crate::message::ProxyResponseCodec;
 
-pub async fn run_server(addr: &str, logger: slog::Logger, config:Option<opt::Config>) {
+pub fn run_server(addr: &str, logger: slog::Logger, config:Option<opt::Config>) {
     let server_config = quinn::ServerConfig {
         transport: Arc::new(quinn::TransportConfig {
             stream_window_uni: 0,
@@ -27,75 +27,58 @@ pub async fn run_server(addr: &str, logger: slog::Logger, config:Option<opt::Con
     let mut endpoint = quinn::EndpointBuilder::default();
     endpoint.logger(logger.new(o!("quic"=>addr.to_owned())));
     endpoint.listen(server_config.build());
-    let (driver, endpoint, mut incoming) = endpoint.bind(addr).unwrap();
-//    actix::spawn(driver.map_err(|e|{
-//        dbg!(e);
-//    }));
+    let bind_result = endpoint.bind(addr);
+    if bind_result.is_err() {
+        println!("error bind");
+        return;
+    }
+    let (driver, endpoint, mut incoming) = bind_result.unwrap();
     tokio::spawn(driver.map_err(|e|{
         dbg!(e);
     }));
-    while let Some(Ok((connectionDriver,connection,incomingStreams))) = await!(incoming.next()) {
+    let task = incoming.for_each(move|(connnectionDriver,connection,incomingStreams)|{
         let logger = logger.clone();
-        tokio::spawn_async(async move {
-            await!(handle_new_client_async(connectionDriver,connection,incomingStreams,logger));
-        });
-    }
-//    let s = incoming.for_each(move |(connectionDriver,connection,incomingStreams)| {
-//        handle_new_client(connectionDriver,connection,incomingStreams,logger.clone());
-//        Ok(())
-//    });
-//    actix::spawn(s);
-//    actix::spawn(s);
+        handle_new_client_async(connnectionDriver,connection,incomingStreams,logger);
+        Ok(())
+    });
+    tokio::spawn(task);
 }
 
-pub async fn handle_new_client_async(connectionDriver:ConnectionDriver,connection:Connection,mut incomingStreams:IncomingStreams, logger:slog::Logger) {
+pub fn handle_new_client_async(connectionDriver:ConnectionDriver,connection:Connection,mut incomingStreams:IncomingStreams, logger:slog::Logger) {
+    println!("new client");
     let remote_address = connection.remote_address();
     tokio::spawn(connectionDriver.map_err(|driverError|{
         dbg!(driverError);
     }));
-    while let Some(Ok((stream))) = await!(incomingStreams.next()) {
+    let client_logger = new_client_logger(remote_address.clone());
+    let hb_logger = client_logger.clone();
+    let hb_task = connection.open_bi().then(|result|{
+        println!("openbi");
+        let (sendStream,recvStream) = result.unwrap();
+        let recvStream = FramedRead::new(recvStream,ActorMessage::ProxyRequestCodec::new(CryptoConfig::default().convert().unwrap()));
+        let sendStream = FramedWrite::new(sendStream,ActorMessage::ProxyResponseCodec::new(CryptoConfig::default().convert().unwrap()));
+        recvStream.filter_map(move|item|{
+            process_heartbeat(&hb_logger,item)
+        }).forward(sendStream).map_err(|e|{
+            dbg!(e);
+        })
+    }).map(|x|{
+        ()
+    });
+    tokio::spawn(hb_task);
+    let task = incomingStreams.for_each(move|stream|{
         println!("new stream");
         let (sendStream, recvStream) = match stream {
             quinn::NewStream::Bi(send, recv) => (send, recv),
             quinn::NewStream::Uni(_) => unreachable!("disabled by endpoint configuration"),
         };
         let client_logger = new_client_logger(remote_address.clone());
-        let mut async_client = AsyncProxyClient::new(client_logger,sendStream);
-        tokio::spawn_async(read_stream(async_client,recvStream));
-    }
-}
-
-pub fn handle_new_client(connectionDriver:ConnectionDriver,connection:Connection,incomingStreams:IncomingStreams, logger:slog::Logger) {
-    actix::Arbiter::spawn_fn(move||{
-        let remote_address = connection.remote_address();
-        let streamsTask = incomingStreams.for_each(move|stream|{
-            println!("new stream");
-            let (sendStream, recvStream) = match stream {
-                quinn::NewStream::Bi(send, recv) => (send, recv),
-                quinn::NewStream::Uni(_) => unreachable!("disabled by endpoint configuration"),
-            };
-            let client_logger = new_client_logger(remote_address.clone());
-            ProxyClient::create(move|ctx|{
-                // TODO: deal with error gracefully
-                let (client,receiver) = ProxyClient::new(client_logger.clone());
-                let sink = tokio::codec::FramedWrite::new(sendStream,ActorMessage::ProxyResponseCodec::new(CryptoConfig::default().convert().unwrap()));
-                let write_task = receiver.forward(sink.sink_map_err(|sinkError|{
-                    dbg!(sinkError);
-                })).map(|_|());
-                ctx.add_stream(FramedRead::new(recvStream, ActorMessage::ProxyRequestCodec::new(CryptoConfig::default().convert().unwrap())));
-                ctx.spawn(write_task.into_actor(&client));
-                client
-            });
-            Ok(())
-        }).map_err(|incomingStreamErr|{
-            dbg!(incomingStreamErr);
-        });
-        actix::spawn(streamsTask);
-        actix::spawn(connectionDriver.map_err(|driverError|{
-            dbg!(driverError);
-        }));
+        AsyncProxyClient::create(client_logger,sendStream,recvStream);
         Ok(())
+    }).map_err(|e|{
+        dbg!(e);
     });
+    tokio::spawn(task);
 }
 
 pub fn new_client_logger(addr:SocketAddr)->slog::Logger{

@@ -20,10 +20,12 @@ use uuid;
 
 use crate::frontend::agent::{Agent, AgentType};
 use crate::message as ActorMessage;
-use crate::message::{ProxyRequest, ProxyResponse};
+use crate::message::{ProxyRequest, ProxyResponse, ProxyResponseCodec, ProxyRequestCodec};
 use crate::opt;
 use crate::opt::CryptoConfig;
 use crate::socks::codec;
+use quinn::{SendStream, Connection};
+use std::net::SocketAddr;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -32,6 +34,7 @@ pub struct Heartbeat;
 
 pub struct FrontEndServer {
     clients: HashMap<u16, Addr<Agent>>,
+    servers: HashMap<SocketAddr,Connection>,
     hb:Instant,
     hb_index:u32,
     last_hb_instant:Instant,
@@ -39,19 +42,26 @@ pub struct FrontEndServer {
     writer: Option<UnboundedSender<ProxyRequest>>
 }
 
-impl FrontEndServer {
-    pub fn new() -> FrontEndServer {
+pub struct HeartbeatActor {
+    hb:Instant,
+    hb_index:u32,
+    last_hb_instant:Instant,
+    pub logger: Logger,
+    writer:tokio::codec::FramedWrite<SendStream,ProxyRequestCodec>
+}
+
+impl HeartbeatActor {
+    pub fn new(writer:tokio::codec::FramedWrite<SendStream,ProxyRequestCodec>) -> HeartbeatActor {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::CompactFormat::new(decorator).build().fuse();
         let drain = slog_async::Async::new(drain).build().fuse();
-        let log = slog::Logger::root(drain, o!("FrontEndServer"=>1));
-        FrontEndServer {
-            clients: HashMap::new(),
+        let log = slog::Logger::root(drain, o!("Heartbeat"=>1));
+        HeartbeatActor {
             hb: Instant::now(),
             hb_index: 0,
             last_hb_instant: Instant::now(),
             logger: log,
-            writer: None
+            writer
         }
     }
 
@@ -64,17 +74,6 @@ impl FrontEndServer {
             if hb_duration > Duration::from_secs(10) {
                 // heartbeat timed out
                 info!(hb_logger,"heartbeat failed, disconnecting!";"duration"=>hb_duration.as_secs());
-
-                // notify chat server
-//                ctx.state()
-//                    .addr
-//                    .do_send(server::Disconnect { id: act.id });
-//
-//                // stop actor
-                //ctx.stop();
-//
-//                // don't try to send a ping
-//                return;
             }
             else {
                 ctx.address().do_send(Heartbeat);
@@ -83,17 +82,44 @@ impl FrontEndServer {
     }
 }
 
+impl Actor for HeartbeatActor {
+    type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.hb(ctx)
+    }
+}
+
+impl StreamHandler<ProxyResponse,std::io::Error> for HeartbeatActor {
+    fn handle(&mut self, item: ProxyResponse, ctx: &mut Self::Context) {
+        unimplemented!()
+    }
+}
+
+impl FrontEndServer {
+    pub fn new() -> FrontEndServer {
+        let decorator = slog_term::TermDecorator::new().build();
+        let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+        let drain = slog_async::Async::new(drain).build().fuse();
+        let log = slog::Logger::root(drain, o!("FrontEndServer"=>1));
+        FrontEndServer {
+            clients: HashMap::new(),
+            servers: HashMap::new(),
+            hb: Instant::now(),
+            hb_index: 0,
+            last_hb_instant: Instant::now(),
+            logger: log,
+            writer: None
+        }
+    }
+}
+
 impl Actor for FrontEndServer {
     type Context = Context<Self>;
 }
 
 #[derive(Message)]
-pub struct ProtocolServerConnected<S,R>
-    where S:AsyncWrite,R:AsyncRead+'static
-{
-    pub send_stream:S,
-    pub recv_stream:R
-}
+pub struct ProtocolServerConnected(pub quinn::Connection);
 
 #[derive(Message)]
 pub struct FrontendConnected<S,R>
@@ -105,18 +131,13 @@ pub struct FrontendConnected<S,R>
     pub agentType: AgentType
 }
 
-impl<S,R> Handler<ProtocolServerConnected<S,R>> for FrontEndServer
-    where S:AsyncWrite+'static,R:AsyncRead+'static
+impl Handler<ProtocolServerConnected> for FrontEndServer
 {
     type Result = ();
 
-    async fn handle(&mut self, msg: ProtocolServerConnected<S, R>, ctx: &mut Self::Context) {
-        ctx.add_stream(FramedRead::new(msg.recv_stream, ActorMessage::ProxyResponseCodec::new(CryptoConfig::default().convert().unwrap())));
-        let (a,b) = unbounded();
-        let writer = tokio::codec::FramedWrite::new(msg.send_stream,ActorMessage::ProxyRequestCodec::new(CryptoConfig::default().convert().unwrap()));
-        ctx.spawn(b.forward(writer.sink_map_err(|e|())).map(|_|()).into_actor(self));
-        self.writer=Some(a);
-        self.hb(ctx);
+    fn handle(&mut self, msg: ProtocolServerConnected, ctx: &mut Self::Context) {
+        let connection = msg.0;
+        self.servers.insert(connection.remote_address(),connection);
     }
 }
 
@@ -198,19 +219,17 @@ impl<S,R> Handler<FrontendConnected<S,R>> for FrontEndServer
     }
 }
 
-impl Handler<Heartbeat> for FrontEndServer {
+impl Handler<Heartbeat> for HeartbeatActor {
     type Result = ();
 
     fn handle(&mut self, msg: Heartbeat, ctx: &mut Self::Context) -> Self::Result {
         self.last_hb_instant=Instant::now();
         self.hb_index+=1;
         info!(self.logger,"send heartbeat {}",self.hb_index);
-        if let Some(writer) = &self.writer {
-            writer.unbounded_send(ActorMessage::ProxyRequest::new(
-                0,
-                ActorMessage::ProxyTransfer::Heartbeat(self.hb_index),
-            )).unwrap();
-        }
+        self.writer.start_send(ActorMessage::ProxyRequest::new(
+            0,
+            ActorMessage::ProxyTransfer::Heartbeat(self.hb_index),
+        ));
     }
 }
 
@@ -223,3 +242,4 @@ impl Handler<ProxyRequest> for FrontEndServer {
         }
     }
 }
+

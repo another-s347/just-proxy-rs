@@ -15,7 +15,6 @@ pub mod message;
 pub mod socks;
 //pub mod connector;
 pub mod opt;
-pub mod backend;
 pub mod transproto;
 pub mod frontend;
 pub mod async_backend;
@@ -174,7 +173,10 @@ fn test() {
     let log = slog::Logger::root(drain, o!("version" => "0.6"));
     let t1 = std::thread::spawn(move||{
         let system = actix::System::new("test-server");
-        tokio::run_async(transproto::tcp::server::run_server("127.0.0.1:12346",log.clone(),None));
+        tokio::run(futures::lazy(move||{
+            transproto::quic::server::run_server("127.0.0.1:12346",log.clone(),None);
+            Ok(())
+        }));
         system.run();
     });
     let t2 = std::thread::spawn(move||{
@@ -199,7 +201,7 @@ fn test() {
             dbg!(e);
         });
         actix::spawn(task);
-        transproto::tcp::client::connect("127.0.0.1:12346",frontend_server);
+        transproto::quic::client::connect("127.0.0.1:12346",frontend_server);
         system.run();
     });
     t1.join();
